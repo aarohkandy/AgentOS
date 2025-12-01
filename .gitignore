@@ -1,6 +1,5 @@
 # Build artifacts
-buildroot/
-output/
+buildroot/output/
 *.iso
 *.tar.gz
 *.log
@@ -20,7 +19,10 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Temporary scripts/files
-scripts/
-*.sh
-iso-build/
+# Live Build artifacts (keep config)
+iso-build/.build/
+iso-build/cache/
+iso-build/chroot/
+iso-build/binary/
+iso-build/local/
+

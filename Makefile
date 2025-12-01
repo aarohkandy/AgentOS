@@ -51,8 +51,12 @@ start-vm:
 setup-os:
 	./scripts/auto-setup-os.sh
 
+# Setup Buildroot
+setup-buildroot:
+	./scripts/setup-buildroot.sh
+
 # Custom Buildroot OS targets
-build-custom-os:
+build-custom-os: setup-buildroot
 	./scripts/build-custom-os.sh
 
 test-custom-os:

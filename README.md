@@ -1,55 +1,72 @@
-## AI-Powered Linux OS – Dev Repo
+# AgentOS
 
-This repo holds **code, scripts, and tests** for your AI-first Linux OS.  
-The actual OS runs inside a **VM** (Oracle VirtualBox first, then QEMU/KVM); this project is the brains, tooling, and documentation.
+**An AI-first Operating System where the agent is the kernel.**
 
-### High-level phases (mirroring `design.plan.md`)
+AgentOS is a research project to build a Linux-based OS designed from the ground up for AI agents. Unlike traditional OSs where AI is an app, in AgentOS, the AI has deep system integration, capable of seeing the screen, controlling inputs, and managing the system.
 
-- **Phase 1 – Oracle VM setup + dev environment**
-- **Phase 2 – Core agent skeleton + basic tests**
-- **Phase 3 – Local LLM integration**
-- **Phase 4 – File management layer (test-driven)**
-- **Phase 5 – Screen capture & automation**
-- **Phase 6 – Clean UI & AI overlay**
-- **Phase 7 – System integration & safety**
-- **Phase 8+ – QEMU/KVM and bare metal**
+## 🚀 Quick Start for AI Agents (and Humans)
 
-This repo never edits `design.plan.md` – that file is the source-of-truth design.
+If you are an AI agent or a human developer wanting to get started immediately, follow these steps.
 
----
-
-### Quickstart (host machine)
-
-1. Clone this repo.
-2. Create a Python virtualenv (Python 3.10+ recommended):
+### 1. Python Agent (Local Development)
+**Best for:** Developing the agent logic, testing LLM integration.
+**Prerequisites:** Python 3.10+
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+# 1. Clone the repository (if you haven't already)
+# git clone <repo_url>
+# cd AgentOS
 
-3. Run tests (ULTRA SIMPLE - no VM needed):
+# 2. Install dependencies
+make install
 
-```bash
+# 3. Run tests
 make test
 ```
 
-**That's it.** 2 seconds, all tests pass, no setup, no VM, no complexity.
+### 2. Full OS Simulation (VirtualBox)
+**Best for:** Testing the OS integration, screen capture, and boot process.
+**Prerequisites:** VirtualBox, Make.
 
-Your OS is Python code - test it like Python code.
+```bash
+# 1. Automated Setup (Creates VM, installs Debian + Agent)
+make setup-os
+```
 
-4. Follow `docs/oracle-vm-setup.md` to create the **Oracle VirtualBox** VM where the OS will actually live.
+### 3. Custom OS Build (Buildroot)
+**Best for:** Creating the final minimal ISO for distribution.
+**Prerequisites:** Linux host, Buildroot dependencies (gcc, make, etc.)
 
-5. **Speed up VM testing**: Use VirtualBox snapshots! After setting up your VM:
-   ```bash
-   # Create a snapshot once
-   ./scripts/vm-snapshot-helper.sh create
-   
-   # Restore snapshot for each test run (takes ~10 seconds instead of full reinstall)
-   ./scripts/vm-snapshot-helper.sh restore
-   ```
-   See `docs/speeding-up-testing.md` for details.
+```bash
+# 1. Build the custom ISO
+make build-custom-os
 
+# 2. Test the ISO in a VM
+make test-custom-os
+```
 
-# AgentOS
+## 📂 Project Structure
+
+- `src/agent/`: The core Python agent code.
+- `scripts/`: Helper scripts for setup, building, and testing.
+- `tests/`: Pytest suite.
+- `buildroot/`: Buildroot source and configuration for the custom OS.
+- `iso-build/`: Live-build configuration for Debian-based ISO.
+- `docs/`: Detailed documentation.
+
+## 📚 Documentation
+
+- [Project Status & Roadmap](PROJECT_STATUS.md) - **Start Here for Context**
+- [Custom OS Build Guide](CUSTOM_OS_BUILD.md)
+- [Automated Setup Guide](AUTOMATED_SETUP.md)
+- [Contributing](CONTRIBUTING.md)
+
+## 🛠️ Development
+
+- **Testing**: `make test` runs the fast local tests.
+- **Linting**: Ensure code is clean and readable.
+- **Virtual Environment**: `make install` creates a `.venv` for you.
+
+## 🤝 Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
