@@ -67,24 +67,31 @@ Build a Linux-based operating system where an **AI agent has deep system integra
 ### ✅ Phase 2: Core Agent Skeleton (COMPLETED)
 - **Data structures** (`src/agent/types.py`):
   - `Message`: role (user/system/assistant) + content
-  - `ToolCall`: name + arguments dict
-  - `AgentStep`: input messages + tool calls + output message
-  - `AgentResult`: final result with messages + steps
+## Phase 2: Core Agent Development (In Progress)
+**Goal:** Create the Python-based AI agent that runs inside the OS.
 
-- **LLM Interface** (`src/agent/llm_interface.py`):
-  - Abstract `LLMBackend` class (interface for any LLM)
-  - `EchoBackend`: Simple test backend that echoes user input
-  - Designed to be easily mockable for tests
+- [x] **Agent Skeleton:** Basic `Agent` class and loop.
+- [x] **LLM Interface:** Abstract base class and `LlamaCppBackend`.
+- [x] **Architecture Refactor:**
+    - [x] **Memory Manager:** Short-term context window (ready for vector DB).
+    - [x] **Planner:** Task decomposition and tracking.
+    - [x] **Tool Registry:** JSON schema generation and function registration.
+    - [x] **Configuration:** Centralized `settings` module.
+- [ ] **Tool Implementation:**
+    - [ ] File System Tools (read/write/search).
+    - [ ] Terminal Tools (run command).
+    - [ ] Browser Tools (via Selenium/Playwright).
+- [ ] **LLM Integration:** Connect `LlamaCppBackend` to a real model (Mistral/Llama 3).
 
-- **Agent Core** (`src/agent/agent_core.py`):
-  - `Agent` class: Takes LLM backend, runs single-step agent loop
-  - `AgentConfig`: Configuration (currently just max_response_tokens)
-  - Minimal skeleton - will expand to multi-step planning later
+## Phase 3: OS Integration (In Progress)
+**Goal:** Embed the agent into the custom OS.
 
-- **Tests** (`tests/test_agent_core.py`):
-  - Test that agent produces assistant message using EchoBackend
-  - Test that max_response_tokens limit is respected
-  - All tests pass with current implementation
+- [x] **OS Build (Debian):**
+    - [x] Automated ISO creation (`scripts/create-automated-iso.sh`).
+    - [x] **Desktop Upgrade:** Switched to **KDE Plasma** for Windows-like usability.
+    - [x] **High-Spec VM:** Upgraded to 8GB RAM, 6 CPUs, 3D Acceleration.
+- [ ] **Agent Startup:** Configure systemd service to launch agent on boot.
+- [ ] **Permissions:** Ensure agent has sudo/root access where needed.
 
 ### 🚧 Phase 1 (ISO Build) - IN PROGRESS
 - **Current task**: Building custom Debian-based ISO using `live-build`
