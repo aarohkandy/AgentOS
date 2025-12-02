@@ -1,0 +1,29 @@
+# Desktop Environment (XFCE4 - Lightweight, Windows-like)
+task-xfce-desktop
+xfce4-terminal
+xfce4-goodies
+
+# Browser
+firefox-esr
+
+# File Manager (already in XFCE, but ensuring)
+thunar
+gvfs-backends
+
+# Network
+network-manager-gnome
+
+# Utilities
+curl
+wget
+git
+vim
+htop
+build-essential
+python3-full
+python3-pip
+python3-venv
+
+# Screen Capture (for Agent)
+scrot
+xdotool

@@ -12,6 +12,12 @@ from .llm_interface import LLMBackend
 from .types import Message
 
 
+try:
+    from llama_cpp import Llama
+except ImportError:
+    Llama = None
+
+
 class LlamaCppBackend(LLMBackend):
     """
     llama.cpp-based backend for local LLM inference.
@@ -55,9 +61,7 @@ class LlamaCppBackend(LLMBackend):
         if self._model is not None:
             return
 
-        try:
-            from llama_cpp import Llama
-        except ImportError:
+        if Llama is None:
             raise ImportError(
                 "llama-cpp-python is not installed. "
                 "Run: ./scripts/setup-llama-cpp.sh"

@@ -24,6 +24,7 @@ mkdir -p "$WORK_DIR"
 # Extract ISO
 echo "1. Extracting ISO..."
 xorriso -osirrox on -indev "$ISO_IN" -extract / "$WORK_DIR/"
+chmod -R +w "$WORK_DIR"
 
 # Add preseed file
 echo "2. Adding preseed configuration..."
@@ -32,9 +33,10 @@ cp "$PRESEED" "$WORK_DIR/preseed/custom.cfg"
 
 # Modify isolinux to use preseed
 echo "3. Configuring boot to use preseed..."
-if [ -f "$WORK_DIR/isolinux/isolinux.cfg" ]; then
-    # Add preseed to kernel command line
-    sed -i 's/append vga=normal initrd=\/install.amd\/initrd.gz/append vga=normal initrd=\/install.amd\/initrd.gz auto=true priority=critical preseed\/file=\/cdrom\/preseed\/custom.cfg/' "$WORK_DIR/isolinux/isolinux.cfg"
+if [ -f "$WORK_DIR/isolinux/txt.cfg" ]; then
+    # Add preseed to kernel command line in txt.cfg (used for default install)
+    # We add locale and keymap here to avoid the initial language questions
+    sed -i 's/append vga=788 initrd=\/install.amd\/initrd.gz --- quiet/append vga=788 initrd=\/install.amd\/initrd.gz auto=true priority=critical locale=en_US.UTF-8 keymap=us file=\/cdrom\/preseed\/custom.cfg --- quiet/' "$WORK_DIR/isolinux/txt.cfg"
 fi
 
 # Build new ISO
