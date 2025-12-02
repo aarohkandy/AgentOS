@@ -37,10 +37,11 @@ else
     
     # Configure VM
     VBoxManage modifyvm "$VM_NAME" \
-        --memory 2048 \
-        --cpus 2 \
+        --memory 8192 \
+        --cpus 6 \
         --vram 128 \
         --graphicscontroller vmsvga \
+        --accelerate3d on \
         --boot1 dvd \
         --boot2 disk \
         --boot3 none \
