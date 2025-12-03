@@ -80,33 +80,51 @@ class AgentSidebar(QWidget):
         if self.is_visible: return
         self.is_visible = True
         self.show()
-        self.anim.setStartValue(QPoint(self.screen_width, 0))
-        self.anim.setEndValue(QPoint(self.screen_width - self.sidebar_width, 0))
+        self.raise_() # Bring to front
+        
+        # Animate from Off-Screen (Right) to On-Screen (Right Edge)
+        start_pos = QPoint(self.screen_width, 0)
+        end_pos = QPoint(self.screen_width - self.sidebar_width, 0)
+        
+        self.anim.setStartValue(start_pos)
+        self.anim.setEndValue(end_pos)
         self.anim.start()
+        print("Sidebar sliding IN")
         
     def slide_out(self):
         if not self.is_visible: return
         self.is_visible = False
-        self.anim.setStartValue(QPoint(self.screen_width - self.sidebar_width, 0))
-        self.anim.setEndValue(QPoint(self.screen_width, 0))
+        
+        # Animate from On-Screen to Off-Screen
+        start_pos = QPoint(self.screen_width - self.sidebar_width, 0)
+        end_pos = QPoint(self.screen_width, 0)
+        
+        self.anim.setStartValue(start_pos)
+        self.anim.setEndValue(end_pos)
         self.anim.start()
+        print("Sidebar sliding OUT")
 
     def on_mouse_move(self, x, y):
-        # Trigger zone: Rightmost 10 pixels
-        if x >= self.screen_width - 10:
-            # We need to signal the GUI thread to update
-            # (PyQt isn't thread safe, so we can't call slide_in directly from here)
-            # For this simple prototype, we'll cheat, but in prod use Signals
+        # Debug print to see if we are getting events
+        # print(f"Mouse: {x}, {y}") 
+        
+        # Trigger zone: Rightmost 5 pixels
+        if x >= self.screen_width - 5:
             QTimer.singleShot(0, self.slide_in)
         
-        # Close zone: If mouse moves far left of the sidebar (e.g. x < width - 450)
+        # Close zone: If mouse moves left of the sidebar
         elif x < self.screen_width - self.sidebar_width - 50:
              QTimer.singleShot(0, self.slide_out)
 
 def main():
     app = QApplication(sys.argv)
+    
+    # Force update screen size
+    screen = app.primaryScreen()
+    rect = screen.geometry()
+    print(f"Screen Resolution: {rect.width()}x{rect.height()}")
+    
     sidebar = AgentSidebar()
-    # sidebar.show() # Don't show initially, wait for mouse
     sys.exit(app.exec())
 
 if __name__ == "__main__":
