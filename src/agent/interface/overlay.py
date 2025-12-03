@@ -118,11 +118,6 @@ class AgentSidebar(QWidget):
         self.anim.setDuration(300)
         self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         
-        # Mouse Polling
-        self.poll_timer = QTimer()
-        self.poll_timer.timeout.connect(self.check_mouse_position)
-        self.poll_timer.start(100)
-        
     def init_ui(self):
         # Main Container
         self.container = QFrame(self)
@@ -236,17 +231,37 @@ class AgentSidebar(QWidget):
         self.anim.setEndValue(QPoint(self.screen_width, self.screen_top))
         self.anim.start()
 
-    def check_mouse_position(self):
-        cursor_pos = QCursor.pos()
-        x = cursor_pos.x()
+class EdgeTrigger(QWidget):
+    """Invisible 1px window on the right edge to detect mouse entry."""
+    def __init__(self, sidebar):
+        super().__init__()
+        self.sidebar = sidebar
         
-        # Trigger zone: Rightmost 5 pixels
-        if x >= self.screen_width - 5:
-            self.slide_in()
+        # Screen Setup
+        screen = QApplication.primaryScreen()
+        geometry = screen.availableGeometry()
         
-        # Close zone: If mouse moves far left of the sidebar
-        elif x < self.screen_width - self.sidebar_width - 50:
-             self.slide_out()
+        # 2px wide trigger zone on the far right
+        self.setGeometry(
+            geometry.width() + geometry.x() - 2, 
+            geometry.y(), 
+            2, 
+            geometry.height()
+        )
+        
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | 
+            Qt.WindowType.WindowStaysOnTopHint | 
+            Qt.WindowType.Tool |
+            Qt.WindowType.X11BypassWindowManagerHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent;")
+        self.show()
+
+    def enterEvent(self, event):
+        """Mouse entered the edge!"""
+        self.sidebar.slide_in()
 
 def main():
     # Setup logging
@@ -259,7 +274,13 @@ def main():
     
     try:
         app = QApplication(sys.argv)
+        
+        # Create Sidebar
         sidebar = AgentSidebar()
+        
+        # Create Edge Trigger
+        trigger = EdgeTrigger(sidebar)
+        
         sys.exit(app.exec())
     except Exception as e:
         logging.critical(f"Overlay crashed: {e}", exc_info=True)
