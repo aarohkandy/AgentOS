@@ -1,0 +1,15 @@
+# Build artifacts
+*.iso
+*.img
+*.hybrid.iso
+cache/
+chroot/
+chroot.packages.live
+binary/
+.build/
+*.log
+
+# Temporary files
+*.tmp
+*~
+.DS_Store
