@@ -40,10 +40,14 @@ fonts-noto
 
 # Graphics drivers
 xserver-xorg-video-intel
-xserver-xorg-video-amd
+xserver-xorg-video-amdgpu
 xserver-xorg-video-nouveau
 firmware-linux
 firmware-misc-nonfree
+
+# UI Tools for Setup Wizard
+zenity
+python3-tk
 
 # Development tools (for your AI system)
 python3

@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+import tkinter as tk
+from tkinter import ttk, messagebox
+import subprocess
+import os
+import sys
+
+class AgentOSWizard:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Welcome to agentOS")
+        self.root.geometry("600x500")
+        self.root.configure(bg="#1a1a1a")
+        
+        # Style
+        self.style = ttk.Style()
+        self.style.theme_use('clam')
+        self.style.configure("TFrame", background="#1a1a1a")
+        self.style.configure("TLabel", background="#1a1a1a", foreground="white", font=("Sans", 12))
+        self.style.configure("Header.TLabel", font=("Sans", 24, "bold"), foreground="#00BFFF")
+        self.style.configure("TButton", font=("Sans", 11), padding=10)
+        
+        self.main_frame = ttk.Frame(root, padding="20")
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Slides
+        self.slides = [
+            self.slide_welcome,
+            self.slide_wifi,
+            self.slide_updates,
+            self.slide_finish
+        ]
+        self.current_slide = 0
+        
+        self.show_slide()
+
+    def clear_frame(self):
+        for widget in self.main_frame.winfo_children():
+            widget.destroy()
+
+    def slide_welcome(self):
+        self.clear_frame()
+        
+        ttk.Label(self.main_frame, text="Welcome to agentOS", style="Header.TLabel").pack(pady=40)
+        
+        msg = ("Thank you for choosing agentOS.\n\n"
+               "This wizard will help you set up your system.\n"
+               "We'll get you connected and ready to go in seconds.")
+        ttk.Label(self.main_frame, text=msg, justify=tk.CENTER, wraplength=500).pack(pady=20)
+        
+        ttk.Button(self.main_frame, text="Get Started", command=self.next_slide).pack(pady=50)
+
+    def slide_wifi(self):
+        self.clear_frame()
+        ttk.Label(self.main_frame, text="Network Setup", style="Header.TLabel").pack(pady=20)
+        
+        # Check connection
+        connected = self.check_internet()
+        
+        if connected:
+            ttk.Label(self.main_frame, text="✅ You are connected to the internet!", foreground="#00FF00").pack(pady=20)
+            ttk.Button(self.main_frame, text="Continue", command=self.next_slide).pack(pady=20)
+        else:
+            ttk.Label(self.main_frame, text="No internet connection detected.").pack(pady=10)
+            ttk.Button(self.main_frame, text="Open Network Settings", command=self.open_network_manager).pack(pady=10)
+            ttk.Button(self.main_frame, text="Skip for Now", command=self.next_slide).pack(pady=20)
+
+    def slide_updates(self):
+        self.clear_frame()
+        ttk.Label(self.main_frame, text="System Updates", style="Header.TLabel").pack(pady=20)
+        
+        ttk.Label(self.main_frame, text="Checking for updates...").pack(pady=20)
+        
+        # Mock update check for now
+        ttk.Button(self.main_frame, text="Update Now (Mock)", state="disabled").pack(pady=10)
+        ttk.Button(self.main_frame, text="Continue", command=self.next_slide).pack(pady=20)
+
+    def slide_finish(self):
+        self.clear_frame()
+        ttk.Label(self.main_frame, text="All Set!", style="Header.TLabel").pack(pady=40)
+        
+        ttk.Label(self.main_frame, text="Your agentOS is ready to use.").pack(pady=20)
+        
+        ttk.Button(self.main_frame, text="Start Using agentOS", command=self.finish_wizard).pack(pady=50)
+
+    def next_slide(self):
+        self.current_slide += 1
+        if self.current_slide < len(self.slides):
+            self.slides[self.current_slide]()
+
+    def check_internet(self):
+        try:
+            subprocess.check_call(["ping", "-c", "1", "8.8.8.8"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except:
+            return False
+
+    def open_network_manager(self):
+        try:
+            subprocess.Popen(["nm-connection-editor"])
+        except:
+            messagebox.showerror("Error", "Could not open Network Manager")
+
+    def finish_wizard(self):
+        # Disable wizard autostart
+        autostart_file = os.path.expanduser("~/.config/autostart/agentos-wizard.desktop")
+        if os.path.exists(autostart_file):
+            try:
+                os.remove(autostart_file)
+            except:
+                pass
+        self.root.destroy()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = AgentOSWizard(root)
+    root.mainloop()
