@@ -1,15 +1,12 @@
 import logging
 import time
-import subprocess
-import shutil
+from core.automation.screen_controller import ScreenController
 
 logger = logging.getLogger(__name__)
 
 class Executor:
     def __init__(self):
-        self.xdotool_path = shutil.which("xdotool")
-        if not self.xdotool_path:
-            logger.warning("xdotool not found. GUI execution will fail.")
+        self.screen_ctrl = ScreenController()
 
     def execute(self, plan):
         if "error" in plan:
@@ -36,36 +33,25 @@ class Executor:
         if action == "click":
             loc = step.get("location")
             if loc:
-                self._run_xdotool(f"mousemove {loc[0]} {loc[1]} click 1")
+                self.screen_ctrl.click(loc[0], loc[1])
                 
         elif action == "type":
             text = step.get("text", "")
-            # escape double quotes
-            text = text.replace('"', '\\"')
-            self._run_xdotool(f"type --delay 50 \"{text}\"")
+            self.screen_ctrl.type_text(text)
             
         elif action == "key":
             key = step.get("key", "")
-            self._run_xdotool(f"key {key}")
+            self.screen_ctrl.press_key(key)
             
         elif action == "wait":
             sec = step.get("seconds", 1.0)
             time.sleep(sec)
             
         elif action == "drag":
-            # Drag logic usually involves mousedown -> mousemove -> mouseup
             s = step.get("start")
             e = step.get("end")
             if s and e:
-                self._run_xdotool(f"mousemove {s[0]} {s[1]} mousedown 1 mousemove {e[0]} {e[1]} mouseup 1")
+                self.screen_ctrl.drag(s[0], s[1], e[0], e[1])
         
         else:
             logger.warning(f"Unknown action: {action}")
-
-    def _run_xdotool(self, args):
-        if not self.xdotool_path:
-            logger.info(f"[Dry Run] xdotool {args}")
-            return
-            
-        cmd = f"{self.xdotool_path} {args}"
-        subprocess.run(cmd, shell=True, check=True)
