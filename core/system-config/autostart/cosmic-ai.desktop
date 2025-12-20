@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Cosmic AI
+Exec=/opt/cosmic-os/venv/bin/python3 /opt/cosmic-os/core/ai_engine/main.py
+Icon=utilities-terminal
+Comment=Start Cosmic AI Daemon
+X-GNOME-Autostart-enabled=true
