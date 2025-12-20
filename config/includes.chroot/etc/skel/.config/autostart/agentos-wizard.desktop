@@ -1,7 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=agentOS Setup Wizard
-Exec=/usr/local/bin/agentos-wizard
-Icon=system-run
-Comment=Initial setup for agentOS
-X-GNOME-Autostart-enabled=true

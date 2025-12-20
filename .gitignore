@@ -1,15 +1,12 @@
-# Build artifacts
-*.iso
-*.img
-*.hybrid.iso
-/cache/
-/chroot/
-/chroot.packages.live
-/binary/
-/.build/
+core/ai-engine/models/*
+!core/ai-engine/models/.gitkeep
+*.pyc
+__pycache__/
 *.log
-
-# Temporary files
-*.tmp
-*~
-.DS_Store
+.env
+config/cosmic-os.conf
+.vscode/
+*.swp
+dist/
+build/
+*.egg-info/

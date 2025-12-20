@@ -1,0 +1,533 @@
+# Cosmic OS - Complete Development Environment Setup
+
+## Project Overview
+Build a complete development environment for Cosmic OS - an AI-integrated, GUI-first Linux operating system overlay on top of Ubuntu/Kubuntu. The system features an AI assistant that can control the desktop through actual GUI interactions (clicks, keyboard input) with ultra-fast iteration times (10-30 seconds from code change to test).
+
+## Core Requirements
+
+### System Architecture
+- **Base OS**: Ubuntu 24.04 LTS or Kubuntu 24.04 LTS
+- **Desktop Environment**: KDE Plasma (heavily customized for iOS-like experience)
+- **Development Host**: CachyOS
+- **Testing Environment**: Oracle VirtualBox VM with shared folder for hot-reload
+- **AI Runtime**: llama.cpp with Python bindings (llama-cpp-python)
+- **GUI Automation**: xdotool for X11 automation (migrate to pyatspi2 later)
+- **Programming Language**: Python 3.11+
+
+### Key Features
+1. AI activated via Ctrl+Space hotkey, appears as sidebar (Perplexity Comet style)
+2. AI generates list of commands before executing (not live execution)
+3. Three-tier AI system: bad/decent/good computer support
+4. Three lightweight validator AIs check command safety before execution
+5. AI uses actual GUI (clicks, keyboard input) not terminal commands
+6. Almost zero terminal visibility - everything GUI-based
+7. Hot-reload development: 10-30 second iteration time
+
+## Complete File Structure
+
+Create this exact structure:
+
+```
+cosmic-os/
+├── README.md
+├── install.sh                          # One-click installation script
+├── dev-setup.sh                        # Development environment setup
+├── requirements.txt                    # Python dependencies
+├── .gitignore
+│
+├── core/
+│   ├── __init__.py
+│   │
+│   ├── ai-engine/
+│   │   ├── __init__.py
+│   │   ├── main.py                     # Main AI daemon (systemd service)
+│   │   ├── model_manager.py            # Handles 3-tier model loading
+│   │   ├── command_generator.py        # Generates GUI command sequences
+│   │   ├── command_validator.py        # 3 lightweight validation AIs
+│   │   ├── executor.py                 # Executes GUI commands via xdotool
+│   │   ├── ipc_server.py              # D-Bus/socket server for GUI communication
+│   │   ├── config.py                   # Configuration management
+│   │   └── models/                     # Local AI models directory
+│   │       ├── tier1/                  # Phi-3-mini or SmolLM (1-4B)
+│   │       ├── tier2/                  # Llama 3.2 3B or Qwen2.5 7B
+│   │       ├── tier3/                  # Qwen2.5 14B or Llama 3.1 8B
+│   │       └── validators/             # 3 tiny models for validation (<1B each)
+│   │
+│   ├── gui/
+│   │   ├── __init__.py
+│   │   ├── sidebar.py                  # Main AI sidebar widget (Qt/KDE)
+│   │   ├── setup_wizard.py             # First-boot setup wizard
+│   │   ├── settings_panel.py           # Cosmic OS settings GUI
+│   │   └── assets/
+│   │       ├── icons/
+│   │       ├── themes/
+│   │       └── qml/                    # QML files for KDE integration
+│   │
+│   ├── system-config/
+│   │   ├── kde-plasma-setup.sh         # KDE Plasma customization
+│   │   ├── latte-dock-config.sh        # iOS-like dock setup
+│   │   ├── theme-setup.sh              # Custom theme installation
+│   │   ├── autostart/
+│   │   │   └── cosmic-ai.desktop       # Autostart AI daemon
+│   │   ├── systemd/
+│   │   │   ├── cosmic-ai.service       # AI daemon service
+│   │   │   └── cosmic-hotreload.service # Development hot-reload service
+│   │   ├── keybindings/
+│   │   │   └── cosmic-shortcuts.kksrc  # Ctrl+Space and other hotkeys
+│   │   └── plasma-configs/
+│   │       ├── kdeglobals              # KDE global settings
+│   │       ├── kwinrc                  # Window manager config
+│   │       └── plasmashellrc           # Plasma shell config
+│   │
+│   └── automation/
+│       ├── __init__.py
+│       ├── screen_controller.py        # xdotool wrapper for clicks/typing
+│       ├── window_manager.py           # Window detection and management
+│       ├── accessibility.py            # AT-SPI integration (future)
+│       └── action_primitives.py        # Basic actions: click, type, wait, etc.
+│
+├── scripts/
+│   ├── install-models.sh               # Download AI models based on tier
+│   ├── detect-hardware.sh              # Auto-detect computer tier
+│   ├── vm-setup.sh                     # VirtualBox VM configuration
+│   ├── dev-sync.sh                     # Hot-reload file watcher (for VM)
+│   └── test-ai.py                      # Quick AI functionality test
+│
+├── config/
+│   ├── cosmic-os.conf                  # Main configuration file
+│   ├── model-urls.json                 # URLs for downloading models
+│   └── default-keybinds.json           # Default keybinding configuration
+│
+├── tests/
+│   ├── test_command_generator.py
+│   ├── test_validators.py
+│   ├── test_executor.py
+│   └── test_integration.py
+│
+└── docs/
+    ├── ARCHITECTURE.md
+    ├── DEVELOPMENT.md
+    ├── API.md
+    └── USER_GUIDE.md
+```
+
+## Detailed Implementation Requirements
+
+### 1. Main AI Daemon (core/ai-engine/main.py)
+
+```python
+# Key requirements:
+- Run as systemd user service
+- Load appropriate AI model based on detected hardware tier
+- Listen on D-Bus or Unix socket for GUI requests
+- Process requests: user message → command plan → validation → execution
+- Graceful shutdown and restart support
+- Logging to journalctl
+- Configuration via config/cosmic-os.conf
+
+# Architecture:
+class CosmicAI:
+    def __init__(self):
+        self.model_manager = ModelManager()
+        self.command_gen = CommandGenerator(self.model_manager.main_model)
+        self.validators = CommandValidator(self.model_manager.validator_models)
+        self.executor = Executor()
+        self.ipc = IPCServer()
+    
+    def process_request(self, user_message):
+        # 1. Generate command plan
+        plan = self.command_gen.generate(user_message)
+        
+        # 2. Validate with 3 tiny AIs
+        if not self.validators.approve_all(plan):
+            return {"error": "Command plan rejected by validators"}
+        
+        # 3. Execute GUI actions
+        result = self.executor.execute(plan)
+        return result
+```
+
+### 2. Model Manager (core/ai-engine/model_manager.py)
+
+```python
+# Requirements:
+- Detect system RAM and GPU availability
+- Auto-select tier (1/2/3) based on hardware
+- Load models using llama-cpp-python
+- Support for model switching without restart
+- Handle model downloads if not present
+
+# Tier detection:
+- Tier 1: <8GB RAM, no GPU → SmolLM 1.7B or Phi-3-mini
+- Tier 2: 8-16GB RAM → Llama 3.2 3B or Qwen2.5 7B  
+- Tier 3: >16GB RAM or GPU → Qwen2.5 14B or Llama 3.1 8B
+
+# Validators: Always use 3 tiny models (~500MB-1GB each)
+- safety_validator: Check for destructive commands
+- logic_validator: Verify command makes sense
+- efficiency_validator: Check for better alternatives
+```
+
+### 3. Command Generator (core/ai-engine/command_generator.py)
+
+```python
+# Requirements:
+- Takes natural language input
+- Outputs structured command list in JSON format
+- Commands are GUI actions, NOT terminal commands
+
+# Example output format:
+{
+    "plan": [
+        {"action": "click", "target": "firefox_icon", "location": [100, 50]},
+        {"action": "wait", "seconds": 2},
+        {"action": "type", "text": "gmail.com"},
+        {"action": "key", "key": "Return"},
+        {"action": "wait", "seconds": 3},
+        {"action": "click", "target": "login_button", "location": [640, 360]}
+    ],
+    "description": "Opening Firefox and navigating to Gmail",
+    "estimated_time": 7
+}
+
+# Prompt engineering:
+- System prompt trains model to output ONLY GUI actions
+- Emphasize: "You control a computer by clicking and typing, not terminal commands"
+- Include screen resolution in context
+- Include list of available applications
+```
+
+### 4. Command Validator (core/ai-engine/command_validator.py)
+
+```python
+# Requirements:
+- Three separate validator instances
+- Each uses tiny model (<1B parameters)
+- Fast validation (<500ms total for all three)
+- Returns approval + reason
+
+# Validator 1: Safety
+- Checks for destructive actions (rm -rf, format, etc.)
+- Prevents closing critical system apps
+- Blocks suspicious file operations
+
+# Validator 2: Logic
+- Verifies command sequence makes sense
+- Checks if prerequisites are met (e.g., app is installed)
+- Validates target elements exist
+
+# Validator 3: Efficiency  
+- Suggests faster alternatives if available
+- Checks for redundant steps
+- Optimizes wait times
+```
+
+### 5. Executor (core/ai-engine/executor.py)
+
+```python
+# Requirements:
+- Execute GUI command sequences from command generator
+- Use xdotool for all GUI interactions
+- Robust error handling and retries
+- Screenshot capability for debugging
+- Pause/cancel support
+
+# Key methods:
+- execute_click(x, y, button='left')
+- execute_type(text, delay=0.05)
+- execute_key(key_name)
+- execute_wait(seconds)
+- find_window(window_name)
+- execute_drag(x1, y1, x2, y2)
+```
+
+### 6. Screen Controller (core/automation/screen_controller.py)
+
+```python
+# Requirements:
+- Wrapper around xdotool with error handling
+- Window detection and focus management
+- Screen resolution detection
+- Mouse cursor positioning
+- Keyboard input simulation
+
+# Use xdotool commands:
+- xdotool mousemove x y click button
+- xdotool type --delay milliseconds "text"
+- xdotool key key_name
+- xdotool search --name "window" windowactivate
+- xdotool getactivewindow getwindowname
+```
+
+### 7. GUI Sidebar (core/gui/sidebar.py)
+
+```python
+# Requirements:
+- Qt/QML-based KDE Plasma widget
+- Triggered by Ctrl+Space global hotkey
+- Slides in from right side (Perplexity Comet style)
+- Chat interface with message history
+- Shows command plan before execution with approve/deny buttons
+- Loading states while AI generates plan
+- Minimal, beautiful design
+
+# Features:
+- Text input field with send button
+- Message bubbles (user vs AI)
+- Command preview panel (shows plan before execution)
+- Settings button (model selection, permissions)
+- Minimize/close buttons
+- Transparent/blur background effect
+```
+
+### 8. KDE Plasma Setup (core/system-config/kde-plasma-setup.sh)
+
+```bash
+# Requirements:
+- Install and configure Latte Dock
+- Set up iOS-like bottom dock
+- Hide or minimize top panel
+- Apply custom theme (Breeze-based, modified)
+- Disable desktop icons
+- Configure full-screen app launcher
+- Set wallpaper
+- Configure window animations (smooth, fast)
+
+# Specific configurations:
+- Latte Dock: bottom, auto-hide, icon-only task manager
+- Panel height: 48px
+- Icon size: 56px
+- Theme: Custom Breeze variant with rounded corners
+- Window decorations: Minimal, no borders
+- Compositor: Enabled with blur effects
+```
+
+### 9. Hot-Reload Development System
+
+```bash
+# dev-sync.sh (runs in VM as systemd service)
+#!/bin/bash
+
+# Watch shared folder for changes
+inotifywait -m -r -e modify,create,delete /mnt/cosmic-os/core/ |
+while read path action file; do
+    echo "Change detected: $file"
+    
+    # Restart AI daemon
+    systemctl --user restart cosmic-ai
+    
+    # Send notification
+    notify-send "Cosmic AI" "Code reloaded" -t 2000
+    
+    # Optional: run quick test
+    python3 /mnt/cosmic-os/scripts/test-ai.py
+done
+```
+
+### 10. Installation Script (install.sh)
+
+```bash
+#!/bin/bash
+# Requirements:
+- Detect Ubuntu/Kubuntu version
+- Check system requirements (RAM, disk space)
+- Install KDE Plasma if not present
+- Install dependencies: Python 3.11+, xdotool, inotify-tools
+- Install Python packages from requirements.txt
+- Detect hardware tier and download appropriate models
+- Copy systemd services
+- Configure KDE Plasma
+- Set up autostart
+- Create default config
+- Enable services
+- Offer to reboot
+
+# Safety:
+- Backup existing configs before modifying
+- Validate each step before proceeding
+- Provide rollback option
+- Clear error messages if something fails
+```
+
+### 11. Requirements.txt
+
+```
+llama-cpp-python>=0.2.0
+PyQt6>=6.6.0
+dbus-python>=1.3.2
+python-xlib>=0.33
+Pillow>=10.0.0
+psutil>=5.9.0
+requests>=2.31.0
+aiohttp>=3.9.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+```
+
+### 12. Configuration File (config/cosmic-os.conf)
+
+```ini
+[General]
+version = 0.1.0
+first_run = true
+
+[AI]
+tier = auto  # auto, 1, 2, or 3
+main_model_path = core/ai-engine/models/tier2/model.gguf
+validator_models = ["safety", "logic", "efficiency"]
+max_tokens = 512
+temperature = 0.7
+
+[GUI]
+hotkey = Ctrl+Space
+sidebar_width = 400
+sidebar_animation_speed = 200
+theme = cosmic-dark
+
+[Automation]
+click_delay = 0.1
+type_delay = 0.05
+screenshot_on_error = true
+max_retries = 3
+
+[Permissions]
+allow_file_operations = true
+allow_network_access = true  
+allow_system_settings = false
+require_confirmation = true
+
+[Development]
+hot_reload = false
+debug_mode = false
+log_level = INFO
+```
+
+## Critical Implementation Details
+
+### Model Downloads
+- Create `scripts/install-models.sh` that:
+  - Checks available disk space
+  - Downloads from HuggingFace using `huggingface-cli`
+  - Validates downloads with checksums
+  - Converts to GGUF format if needed
+  - Shows progress bar
+
+### IPC Communication
+- Use D-Bus for KDE integration (preferred)
+- Fallback to Unix socket if D-Bus unavailable
+- Message format: JSON with command/response structure
+- Async communication to prevent GUI blocking
+
+### Error Handling
+- Every AI call wrapped in try/except
+- Graceful degradation if model fails to load
+- User-friendly error messages in sidebar
+- Automatic retry logic with backoff
+- Log all errors to `~/.local/share/cosmic-os/logs/`
+
+### Security Considerations
+- Validators MUST approve before ANY execution
+- User confirmation for destructive actions
+- Permissions system (can disable file/network/system access)
+- Command history for debugging
+- Option to run in "safe mode" (preview only, no execution)
+
+### Performance Optimization
+- Lazy load AI models (only when first needed)
+- Cache validator responses for similar commands
+- Preload common GUI targets (Firefox icon location, etc.)
+- Use multiple threads: UI thread, AI thread, execution thread
+- Implement command queuing for multiple requests
+
+## Development Workflow
+
+1. **Initial Setup** (Host - CachyOS):
+   - Clone repo
+   - Run `dev-setup.sh` to prepare development environment
+   
+2. **VM Setup** (VirtualBox):
+   - Create Ubuntu 24.04 VM
+   - Install Guest Additions
+   - Mount shared folder: `~/cosmic-os` → `/mnt/cosmic-os`
+   - Run `vm-setup.sh` inside VM
+   
+3. **Development Loop**:
+   - Edit code in Cursor on CachyOS
+   - File watcher in VM detects change
+   - Auto-restart services (10-30 seconds)
+   - Test immediately in VM
+   - Take VM snapshots at working states
+
+4. **Testing**:
+   - `scripts/test-ai.py` - Quick functionality test
+   - Manual testing in VM
+   - Restore snapshot if broken
+
+## Git Setup
+
+```bash
+# .gitignore contents
+core/ai-engine/models/*
+!core/ai-engine/models/.gitkeep
+*.pyc
+__pycache__/
+*.log
+.env
+config/cosmic-os.conf
+.vscode/
+*.swp
+dist/
+build/
+*.egg-info/
+```
+
+## Success Criteria
+
+The implementation is complete when:
+
+1. ✅ Running `install.sh` on fresh Ubuntu VM installs everything
+2. ✅ Ctrl+Space opens AI sidebar
+3. ✅ User can type "open firefox" and AI generates command plan
+4. ✅ Command plan shows in sidebar with approve/deny buttons
+5. ✅ Approving plan executes actual GUI clicks to open Firefox
+6. ✅ Changing code on host auto-reloads in VM within 30 seconds
+7. ✅ Three validators check every command plan
+8. ✅ System works on all three hardware tiers
+9. ✅ KDE Plasma looks iOS-like with bottom dock
+10. ✅ Zero terminal windows visible to end user
+
+## Antigravity-Specific Instructions
+
+- Create ALL files and directories as specified
+- Implement complete, functional code (no placeholders or TODO comments)
+- Use actual llama.cpp Python bindings with proper initialization
+- Implement real xdotool commands, not pseudocode
+- Make install.sh actually executable and functional
+- Include proper error handling in every function
+- Write actual systemd service files with correct paths
+- Generate working KDE config files with real settings
+- Create functional QML/Qt GUI code
+- Implement complete D-Bus interface
+- Make dev-sync.sh a working file watcher with inotifywait
+- Include helpful comments explaining complex sections
+- Follow Python best practices (type hints, docstrings)
+- Make code modular and maintainable
+- Ensure all paths are correct and consistent across files
+
+## Priority Order
+
+If implementing incrementally, follow this order:
+1. Project structure + basic files
+2. Model manager + hardware detection
+3. AI daemon with echo responses (no real model yet)
+4. IPC server (D-Bus/socket)
+5. GUI sidebar with basic chat
+6. Command generator (with real model)
+7. Validators
+8. Executor + screen controller
+9. KDE Plasma customization
+10. Hot-reload system
+11. Installation scripts
+12. Testing suite
+
+This prompt contains everything needed to build a complete, working development environment for Cosmic OS with ultra-fast iteration times.
