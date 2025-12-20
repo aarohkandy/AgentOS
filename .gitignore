@@ -4,7 +4,6 @@ core/ai-engine/models/*
 __pycache__/
 *.log
 .env
-config/cosmic-os.conf
 .vscode/
 *.swp
 dist/
