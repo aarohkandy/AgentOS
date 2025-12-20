@@ -1,0 +1,25 @@
+[Unit]
+Description=Cosmic OS Hot Reload - Development file watcher
+Documentation=https://github.com/cosmic-os/cosmic-ai
+After=cosmic-ai.service
+Requires=cosmic-ai.service
+ConditionPathExists=/mnt/cosmic-os
+
+[Service]
+Type=simple
+ExecStart=/bin/bash %h/cosmic-os/scripts/dev-sync.sh
+WorkingDirectory=%h/cosmic-os
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=5
+
+# Environment
+Environment=DISPLAY=:0
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cosmic-hotreload
+
+[Install]
+WantedBy=graphical-session.target

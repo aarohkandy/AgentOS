@@ -1,0 +1,38 @@
+[Unit]
+Description=Cosmic AI - AI-powered desktop assistant
+Documentation=https://github.com/cosmic-os/cosmic-ai
+After=graphical-session.target
+Wants=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m core.ai_engine.main
+WorkingDirectory=%h/cosmic-os
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+# Environment
+Environment=DISPLAY=:0
+Environment=PYTHONUNBUFFERED=1
+Environment=COSMIC_OS_HOME=%h/cosmic-os
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cosmic-ai
+
+# Security (allow GUI access but restrict system access)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/cosmic-os
+ReadWritePaths=%h/.config/cosmic-os
+ReadWritePaths=/tmp
+
+# Allow X11/Wayland access
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+[Install]
+WantedBy=graphical-session.target

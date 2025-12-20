@@ -1,0 +1,73 @@
+# Cosmic OS Global Shortcuts
+# KDE KHotKeys configuration
+
+[Data]
+DataCount=1
+
+[Data_1]
+Comment=Cosmic OS Shortcuts
+DataCount=2
+Enabled=true
+Name=Cosmic OS
+SystemGroup=0
+Type=ACTION_DATA_GROUP
+
+[Data_1Conditions]
+Comment=
+ConditionsCount=0
+
+[Data_1_1]
+Comment=Activate Cosmic AI Sidebar
+Enabled=true
+Name=Cosmic AI
+Type=SIMPLE_ACTION_DATA
+
+[Data_1_1Actions]
+ActionsCount=1
+
+[Data_1_1Actions0]
+CommandURL=dbus-send --session --type=method_call --dest=com.cosmicos.ai /com/cosmicos/ai com.cosmicos.ai.ToggleSidebar
+Type=COMMAND_URL
+
+[Data_1_1Conditions]
+Comment=
+ConditionsCount=0
+
+[Data_1_1Triggers]
+Comment=Keyboard shortcut
+TriggersCount=1
+
+[Data_1_1Triggers0]
+Key=Ctrl+Space
+Type=SHORTCUT
+Uuid={cosmic-ai-toggle}
+
+[Data_1_2]
+Comment=Cosmic AI Voice Input (Future)
+Enabled=false
+Name=Cosmic AI Voice
+Type=SIMPLE_ACTION_DATA
+
+[Data_1_2Actions]
+ActionsCount=1
+
+[Data_1_2Actions0]
+CommandURL=cosmic-ai-voice
+Type=COMMAND_URL
+
+[Data_1_2Conditions]
+Comment=
+ConditionsCount=0
+
+[Data_1_2Triggers]
+Comment=Voice activation shortcut
+TriggersCount=1
+
+[Data_1_2Triggers0]
+Key=Ctrl+Shift+Space
+Type=SHORTCUT
+Uuid={cosmic-ai-voice}
+
+[Main]
+Version=2
+AlreadyImported=cosmic-shortcuts
