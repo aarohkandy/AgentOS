@@ -39,4 +39,23 @@ chmod +x scripts/*.sh
 echo "To enable services, run:"
 echo "cp $INSTALL_DIR/core/system-config/autostart/cosmic-ai.desktop ~/.config/autostart/"
 
+echo ""
+echo "Would you like to run the Visual Setup (KDE/Dock/Theme)? (y/n)"
+read -r -p "Select y to transform desktop layout: " response
+if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]
+then
+    # We must run these as the SUDO_USER if available, or current user
+    # because visual settings are user-specific, not root
+    REAL_USER=${SUDO_USER:-$USER}
+    echo "Running visual setup as user: $REAL_USER"
+    
+    chmod +x $INSTALL_DIR/core/system-config/*.sh
+    
+    su - $REAL_USER -c "$INSTALL_DIR/core/system-config/kde-plasma-setup.sh"
+    su - $REAL_USER -c "$INSTALL_DIR/core/system-config/latte-dock-config.sh"
+    su - $REAL_USER -c "$INSTALL_DIR/core/system-config/theme-setup.sh"
+else
+    echo "Skipping visual setup. You can run scripts in core/system-config/ later."
+fi
+
 echo "Installation complete."
