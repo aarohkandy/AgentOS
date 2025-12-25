@@ -24,25 +24,37 @@ echo "$size" | sudo tee "$EXTRACT_DIR/install/filesystem.size" > /dev/null 2>/de
 # Remove old squashfs
 sudo rm -f "$EXTRACT_DIR/casper/filesystem.squashfs" "$EXTRACT_DIR/install/filesystem.squashfs" 2>/dev/null || true
 
-# Create new squashfs with no compression (fastest possible)
-echo "Creating squashfs with no compression (fastest - 30 seconds to 2 minutes)..."
+# Create new squashfs with lzo (fastest compression)
+echo "Creating squashfs with lzo compression (fastest - 1-3 minutes)..."
 squashfs_path="$EXTRACT_DIR/casper/filesystem.squashfs"
 [ ! -f "$squashfs_path" ] && squashfs_path="$EXTRACT_DIR/install/filesystem.squashfs"
 
-# No compression = fastest possible
-compress_opts="-no-compression"
+# Use lzo compression (fastest available) with large blocks and parallel processing
+compress_opts="-comp lzo -b 1M"
 if mksquashfs -help 2>&1 | grep -q "processors"; then
     compress_opts="$compress_opts -processors $(nproc)"
 fi
 
+echo "Starting mksquashfs (should show progress immediately)..."
 sudo mksquashfs "$CHROOT_DIR" "$squashfs_path" \
     $compress_opts -e boot/boot* -progress 2>&1 | \
 while IFS= read -r line; do
     if [[ $line =~ ([0-9]+)% ]]; then
         percent="${BASH_REMATCH[1]}"
-        echo -ne "\rCompressing: ${percent}%"
+        echo -ne "\rCreating squashfs: ${percent}%"
+    elif [[ $line =~ (Creating|Writing|Processing) ]]; then
+        echo ""
+        echo "$line"
+    else
+        echo "$line"
     fi
 done
+echo ""
+
+if [ ! -f "$squashfs_path" ]; then
+    echo "ERROR: Squashfs creation failed!"
+    exit 1
+fi
 
 echo ""
 echo "Squashfs created!"
