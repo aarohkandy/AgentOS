@@ -1,0 +1,85 @@
+# ANOS Minimal Base Package List
+# Essential system packages only
+
+# Core system
+systemd
+udev
+dbus
+network-manager
+sudo
+bash
+coreutils
+util-linux
+procps
+grep
+sed
+awk
+findutils
+tar
+gzip
+xz-utils
+
+# Package management
+apt
+dpkg
+apt-utils
+
+# Network
+iproute2
+net-tools
+wget
+curl
+
+# Filesystem
+e2fsprogs
+dosfstools
+ntfs-3g
+
+# Boot and init
+grub-pc
+grub-efi-amd64-bin
+linux-image-generic
+linux-headers-generic
+
+# KDE Plasma (minimal)
+plasma-desktop
+kwin
+kscreen
+sddm
+sddm-theme-breeze
+kde-config-screenlocker
+kde-config-sddm
+plasma-workspace
+kdeplasma-addons
+systemsettings
+dolphin
+kate
+
+# Calamares installer
+calamares
+calamares-settings-ubuntu
+
+# Development tools (for Cosmic OS)
+python3
+python3-pip
+python3-venv
+python3-pyqt6
+cmake
+build-essential
+git
+
+# GUI automation (for Cosmic OS)
+xdotool
+wmctrl
+scrot
+inotify-tools
+
+# Essential libraries
+libc6
+libstdc++6
+zlib1g
+libssl3
+
+
+
+

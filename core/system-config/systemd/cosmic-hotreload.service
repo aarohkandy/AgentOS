@@ -1,20 +1,21 @@
 [Unit]
-Description=Cosmic OS Hot Reload - Development file watcher
-Documentation=https://github.com/cosmic-os/cosmic-ai
+Description=Cosmic OS Hot Reload Service
+Documentation=https://github.com/cosmic-os/cosmic-os
 After=cosmic-ai.service
-Requires=cosmic-ai.service
-ConditionPathExists=/mnt/cosmic-os
+Wants=cosmic-ai.service
 
 [Service]
 Type=simple
-ExecStart=/bin/bash %h/cosmic-os/scripts/dev-sync.sh
-WorkingDirectory=%h/cosmic-os
+ExecStart=/opt/cosmic-os/scripts/dev-sync.sh
 Restart=on-failure
 RestartSec=3
-TimeoutStopSec=5
 
 # Environment
 Environment=DISPLAY=:0
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+
+# Watch the shared folder (configure path as needed)
+Environment=COSMIC_WATCH_DIR=/mnt/cosmic-os
 
 # Logging
 StandardOutput=journal

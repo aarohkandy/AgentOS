@@ -1,0 +1,142 @@
+{
+    "version": "1.0.0",
+    "description": "Default keyboard shortcuts for Cosmic OS",
+    
+    "global": {
+        "toggle_sidebar": {
+            "keys": "Ctrl+Space",
+            "description": "Toggle the AI sidebar",
+            "action": "cosmic.sidebar.toggle"
+        },
+        "quick_command": {
+            "keys": "Ctrl+Shift+Space",
+            "description": "Quick command input (no sidebar)",
+            "action": "cosmic.command.quick"
+        }
+    },
+    
+    "sidebar": {
+        "close": {
+            "keys": "Escape",
+            "description": "Close the sidebar",
+            "action": "cosmic.sidebar.close"
+        },
+        "submit": {
+            "keys": "Return",
+            "description": "Submit current message",
+            "action": "cosmic.sidebar.submit"
+        },
+        "submit_execute": {
+            "keys": "Ctrl+Return",
+            "description": "Submit and auto-execute (skip approval)",
+            "action": "cosmic.sidebar.submit_execute"
+        },
+        "clear_history": {
+            "keys": "Ctrl+L",
+            "description": "Clear chat history",
+            "action": "cosmic.sidebar.clear"
+        },
+        "settings": {
+            "keys": "Ctrl+,",
+            "description": "Open settings",
+            "action": "cosmic.settings.open"
+        },
+        "focus_input": {
+            "keys": "Ctrl+K",
+            "description": "Focus input field",
+            "action": "cosmic.sidebar.focus_input"
+        }
+    },
+    
+    "command_plan": {
+        "approve": {
+            "keys": "Ctrl+Return",
+            "description": "Approve current command plan",
+            "action": "cosmic.plan.approve"
+        },
+        "deny": {
+            "keys": "Escape",
+            "description": "Deny current command plan",
+            "action": "cosmic.plan.deny"
+        },
+        "edit": {
+            "keys": "Ctrl+E",
+            "description": "Edit command plan",
+            "action": "cosmic.plan.edit"
+        },
+        "details": {
+            "keys": "Ctrl+D",
+            "description": "Show plan details",
+            "action": "cosmic.plan.details"
+        }
+    },
+    
+    "execution": {
+        "pause": {
+            "keys": "Ctrl+P",
+            "description": "Pause execution",
+            "action": "cosmic.exec.pause"
+        },
+        "resume": {
+            "keys": "Ctrl+R",
+            "description": "Resume execution",
+            "action": "cosmic.exec.resume"
+        },
+        "cancel": {
+            "keys": "Ctrl+Shift+Escape",
+            "description": "Cancel current execution",
+            "action": "cosmic.exec.cancel"
+        },
+        "step": {
+            "keys": "Ctrl+.",
+            "description": "Execute single step",
+            "action": "cosmic.exec.step"
+        }
+    },
+    
+    "debug": {
+        "reload_daemon": {
+            "keys": "Ctrl+Alt+R",
+            "description": "Reload AI daemon",
+            "action": "cosmic.debug.reload"
+        },
+        "show_logs": {
+            "keys": "Ctrl+Alt+L",
+            "description": "Show AI logs",
+            "action": "cosmic.debug.logs"
+        },
+        "toggle_safe_mode": {
+            "keys": "Ctrl+Alt+S",
+            "description": "Toggle safe mode (preview only)",
+            "action": "cosmic.debug.safe_mode"
+        },
+        "take_screenshot": {
+            "keys": "Ctrl+Shift+S",
+            "description": "Take screenshot for AI context",
+            "action": "cosmic.debug.screenshot"
+        }
+    },
+    
+    "navigation": {
+        "history_up": {
+            "keys": "Up",
+            "description": "Previous message in history",
+            "action": "cosmic.nav.history_up"
+        },
+        "history_down": {
+            "keys": "Down",
+            "description": "Next message in history",
+            "action": "cosmic.nav.history_down"
+        },
+        "scroll_up": {
+            "keys": "PageUp",
+            "description": "Scroll chat up",
+            "action": "cosmic.nav.scroll_up"
+        },
+        "scroll_down": {
+            "keys": "PageDown",
+            "description": "Scroll chat down",
+            "action": "cosmic.nav.scroll_down"
+        }
+    }
+}

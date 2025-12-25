@@ -1,0 +1,34 @@
+---
+stylesheet:   "style.css"
+
+welcomeCalamares:    "Welcome to ANOS"
+welcomeSetupCalamares: "Welcome to the ANOS installer"
+
+productName:         "ANOS"
+productUrl:          "https://anos.os/"
+productLogo:         "logo.png"
+productIcon:         "logo.png"
+productWelcome:      "logo.png"
+
+showSupportUrl:      true
+showKnownIssuesUrl:  true
+showReleaseNotesUrl: true
+
+supportUrl:          "https://anos.os/support"
+knownIssuesUrl:      "https://anos.os/issues"
+releaseNotesUrl:     "https://anos.os/release-notes"
+
+windowExpanding:     true
+windowShowCancel:    true
+windowShowNext:      true
+windowShowBack:      true
+windowShowDone:      true
+
+windowWidth:         1024
+windowHeight:        768
+
+windowMaximize:      false
+
+
+
+

@@ -1,0 +1,31 @@
+ANOS Operating System Builder - Quick Start
+===========================================
+
+READY TO BUILD!
+
+1. Make sure you have prerequisites installed:
+   - On Arch: sudo pacman -S wget curl 7zip xorriso cdrtools rsync squashfs-tools grub syslinux
+   - On Ubuntu: sudo apt install wget curl p7zip-full xorriso genisoimage rsync squashfs-tools grub-pc-bin
+
+2. Run the builder:
+   cd anos-builder
+   ./build-anos-iso.sh
+
+3. Wait 30-60 minutes for the build to complete
+
+4. You'll get: anos-YYYYMMDD-HHMMSS.iso
+
+5. Boot the ISO in VirtualBox or on a physical machine
+
+6. The Calamares installer will guide you through installation
+   (only asks for username, password, and language)
+
+7. After installation, Cosmic OS will be pre-installed and ready!
+
+CUSTOMIZATION:
+- Replace assets/logo.png with your ANOS symbol
+- Replace assets/splash.png with boot splash
+- Replace assets/wallpaper.png with desktop wallpaper
+- Edit packages/base.list to customize packages
+
+All files are ready. Just run ./build-anos-iso.sh!
