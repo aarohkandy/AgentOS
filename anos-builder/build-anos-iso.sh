@@ -386,6 +386,14 @@ update_iso_files() {
     # Remove old squashfs
     sudo rm -f "$extract_dir/casper/filesystem.squashfs" "$extract_dir/install/filesystem.squashfs" 2>/dev/null || true
     
+    # Unmount virtual filesystems before creating squashfs
+    log_info "Unmounting virtual filesystems..."
+    sudo umount "$CHROOT_DIR/proc" 2>/dev/null || true
+    sudo umount "$CHROOT_DIR/sys" 2>/dev/null || true
+    sudo umount "$CHROOT_DIR/dev/pts" 2>/dev/null || true
+    sudo umount "$CHROOT_DIR/dev" 2>/dev/null || true
+    sudo umount "$CHROOT_DIR/run" 2>/dev/null || true
+    
     # Create new squashfs
     log_info "Creating new squashfs (fastest compression: lzo)..."
     log_warn "Using lzo compression - fastest option (1-3 minutes)..."
@@ -394,15 +402,16 @@ update_iso_files() {
     
     # Use lzo compression (fastest available, -no-compression doesn't exist)
     # Also use parallel processing and fastest block size
+    # Exclude virtual filesystems and boot files
     local compress_opts="-comp lzo -b 1M"
     if mksquashfs -help 2>&1 | grep -q "processors"; then
         compress_opts="$compress_opts -processors $(nproc)"
     fi
     
     log_info "Starting mksquashfs (this should show progress immediately)..."
-    # Quote the exclude pattern to prevent shell expansion (especially in fish)
+    # Quote exclude patterns and exclude virtual filesystems
     sudo mksquashfs "$CHROOT_DIR" "$squashfs_path" \
-        $compress_opts -e 'boot/boot*' -progress 2>&1 | \
+        $compress_opts -e 'boot/boot*' -e 'proc' -e 'sys' -e 'dev' -e 'run' -e 'tmp' -progress 2>&1 | \
     while IFS= read -r line; do
         if [[ $line =~ ([0-9]+)% ]]; then
             local percent="${BASH_REMATCH[1]}"
