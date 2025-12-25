@@ -91,21 +91,39 @@ echo "Building final ISO..."
 # Single file in agentOS root that gets overwritten
 ISO_OUTPUT="$SCRIPT_DIR/../anos.iso"
 
-# Detect bootloader type
-echo "Detecting bootloader..."
-boot_opts=""
+# Detect bootloader type - configure for BOTH UEFI and BIOS
+echo "Detecting bootloader for UEFI and BIOS compatibility..."
+bios_boot_opts=""
+uefi_boot_opts=""
+
+# Check for BIOS bootloader (isolinux or grub-pc)
 if [ -f "$EXTRACT_DIR/isolinux/isolinux.bin" ]; then
-    echo "Using isolinux bootloader"
-    boot_opts="-b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
-elif [ -f "$EXTRACT_DIR/boot/grub/efi.img" ]; then
-    echo "Using EFI bootloader"
-    boot_opts="-e boot/grub/efi.img -no-emul-boot"
+    echo "Found isolinux (BIOS boot)"
+    bios_boot_opts="-b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
+elif [ -f "$EXTRACT_DIR/boot/grub/i386-pc/core.img" ]; then
+    echo "Found GRUB BIOS bootloader"
+    # Create BIOS boot image if needed
+    if [ ! -f "$EXTRACT_DIR/boot/grub/i386-pc/boot.img" ]; then
+        echo "Creating BIOS boot image..."
+        sudo grub-mkimage -O i386-pc -o "$EXTRACT_DIR/boot/grub/i386-pc/core.img" -c "$EXTRACT_DIR/boot/grub/i386-pc/grub.cfg" biosdisk iso9660 2>/dev/null || true
+    fi
+    bios_boot_opts="-b boot/grub/i386-pc/boot.img -no-emul-boot -boot-load-size 4 -boot-info-table"
+fi
+
+# Check for UEFI bootloader
+if [ -f "$EXTRACT_DIR/boot/grub/efi.img" ]; then
+    echo "Found EFI boot image"
+    uefi_boot_opts="-eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot"
 elif [ -f "$EXTRACT_DIR/EFI/boot/bootx64.efi" ]; then
-    echo "Using EFI bootloader (EFI/boot)"
-    boot_opts="-e EFI/boot/bootx64.efi -no-emul-boot"
-else
+    echo "Found EFI bootloader (EFI/boot)"
+    uefi_boot_opts="-eltorito-alt-boot -e EFI/boot/bootx64.efi -no-emul-boot"
+fi
+
+# Combine boot options
+boot_opts="$bios_boot_opts $uefi_boot_opts"
+
+if [ -z "$boot_opts" ]; then
     echo "⚠️  No bootloader found, creating non-bootable ISO"
-    boot_opts=""
 fi
 
 if command -v xorriso &> /dev/null; then
@@ -134,9 +152,8 @@ if command -v xorriso &> /dev/null; then
     if [ -n "$xorriso_cmd" ]; then
         if [ -n "$boot_opts" ]; then
             xorriso_cmd="$xorriso_cmd $boot_opts"
-            if [ -f "$EXTRACT_DIR/boot/grub/efi.img" ] || [ -f "$EXTRACT_DIR/EFI/boot/bootx64.efi" ]; then
-                xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
-            fi
+            # Always add isohybrid flags for both UEFI and BIOS compatibility
+            xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
         fi
         xorriso_cmd="$xorriso_cmd -o \"$ISO_OUTPUT\" \"$EXTRACT_DIR\""
         eval "$xorriso_cmd"
@@ -150,8 +167,10 @@ else
     eval "$geniso_cmd"
 fi
 
+# Make ISO bootable for both UEFI and BIOS
 if command -v isohybrid &> /dev/null; then
-    sudo isohybrid "$ISO_OUTPUT" 2>/dev/null || true
+    echo "Making ISO bootable for UEFI and BIOS..."
+    sudo isohybrid --uefi "$ISO_OUTPUT" 2>/dev/null || sudo isohybrid "$ISO_OUTPUT" 2>/dev/null || true
 fi
 
 # Verify ISO was created
