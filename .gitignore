@@ -1,8 +1,10 @@
 # Build artifacts
 iso-build/
 anos-build/
+anos-builder/anos-build/
 *.iso
 *.iso.tmp
+*.iso.tmp.*
 
 # Python
 __pycache__/
