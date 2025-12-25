@@ -94,26 +94,14 @@ ISO_OUTPUT="$SCRIPT_DIR/../anos.iso"
 # Configure for BOTH UEFI and BIOS boot
 echo "Configuring bootloader for UEFI and BIOS compatibility..."
 
-# Create BIOS boot image using grub if available
+# Find existing BIOS boot image
 bios_boot_img=""
-if [ -d "$EXTRACT_DIR/boot/grub/i386-pc" ]; then
-    echo "Creating BIOS boot image..."
-    # Create a standalone BIOS boot image
-    if command -v grub-mkstandalone &> /dev/null; then
-        sudo mkdir -p "$EXTRACT_DIR/boot/grub/i386-pc"
-        sudo grub-mkstandalone \
-            --format=i386-pc \
-            --output="$EXTRACT_DIR/boot/grub/i386-pc/boot.img" \
-            --install-modules="biosdisk iso9660" \
-            --modules="biosdisk iso9660" \
-            --locales="" \
-            --fonts="" \
-            "boot/grub/grub.cfg=$EXTRACT_DIR/boot/grub/grub.cfg" 2>/dev/null || true
-    fi
-    if [ -f "$EXTRACT_DIR/boot/grub/i386-pc/boot.img" ]; then
-        bios_boot_img="$EXTRACT_DIR/boot/grub/i386-pc/boot.img"
-        echo "BIOS boot image created"
-    fi
+if [ -f "$EXTRACT_DIR/boot/grub/i386-pc/eltorito.img" ]; then
+    bios_boot_img="$EXTRACT_DIR/boot/grub/i386-pc/eltorito.img"
+    echo "Found existing BIOS boot image (eltorito.img)"
+elif [ -f "$EXTRACT_DIR/boot/grub/i386-pc/boot.img" ]; then
+    bios_boot_img="$EXTRACT_DIR/boot/grub/i386-pc/boot.img"
+    echo "Found existing BIOS boot image (boot.img)"
 fi
 
 # Configure boot options
@@ -125,8 +113,10 @@ if [ -f "$EXTRACT_DIR/isolinux/isolinux.bin" ]; then
     echo "Using isolinux for BIOS boot"
     bios_boot_opts="-b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
 elif [ -n "$bios_boot_img" ]; then
-    echo "Using GRUB BIOS boot image"
-    bios_boot_opts="-b boot/grub/i386-pc/boot.img -no-emul-boot -boot-load-size 4 -boot-info-table"
+    # Use the correct path relative to extract dir
+    bios_path="${bios_boot_img#$EXTRACT_DIR/}"
+    echo "Using GRUB BIOS boot image: $bios_path"
+    bios_boot_opts="-b $bios_path -no-emul-boot -boot-load-size 4 -boot-info-table"
 fi
 
 # UEFI boot
