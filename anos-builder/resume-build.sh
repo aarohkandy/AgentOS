@@ -24,13 +24,13 @@ echo "$size" | sudo tee "$EXTRACT_DIR/install/filesystem.size" > /dev/null 2>/de
 # Remove old squashfs
 sudo rm -f "$EXTRACT_DIR/casper/filesystem.squashfs" "$EXTRACT_DIR/install/filesystem.squashfs" 2>/dev/null || true
 
-# Create new squashfs with lzo (fastest compression)
-echo "Creating squashfs with lzo compression (fastest - 2-5 minutes)..."
+# Create new squashfs with no compression (fastest possible)
+echo "Creating squashfs with no compression (fastest - 30 seconds to 2 minutes)..."
 squashfs_path="$EXTRACT_DIR/casper/filesystem.squashfs"
 [ ! -f "$squashfs_path" ] && squashfs_path="$EXTRACT_DIR/install/filesystem.squashfs"
 
-# Use lzo for fastest compression with parallel processing
-compress_opts="-comp lzo"
+# No compression = fastest possible
+compress_opts="-no-compression"
 if mksquashfs -help 2>&1 | grep -q "processors"; then
     compress_opts="$compress_opts -processors $(nproc)"
 fi
@@ -55,7 +55,8 @@ cd "$SCRIPT_DIR"
 
 # Build ISO
 echo "Building final ISO..."
-ISO_OUTPUT="$SCRIPT_DIR/anos-$(date +%Y%m%d-%H%M%S).iso"
+# Single file in agentOS root that gets overwritten
+ISO_OUTPUT="$SCRIPT_DIR/../anos.iso"
 
 if command -v xorriso &> /dev/null; then
     sudo xorriso -as mkisofs \
@@ -86,5 +87,18 @@ fi
 size=$(du -h "$ISO_OUTPUT" | cut -f1)
 echo ""
 echo "✅ ANOS ISO created: $ISO_OUTPUT (${size})"
+
+# Auto-push to GitHub
+echo ""
+echo "Pushing to GitHub..."
+cd "$SCRIPT_DIR/.."
+if git rev-parse --git-dir > /dev/null 2>&1; then
+    git add -A
+    git commit -m "ANOS build: $(date +%Y%m%d-%H%M%S)" 2>&1 | grep -v "nothing to commit" || true
+    git push origin main 2>&1
+    echo "✅ Pushed to GitHub"
+else
+    echo "⚠️  Not a git repository, skipping GitHub push"
+fi
 
 
