@@ -477,9 +477,9 @@ build_iso() {
         [ ! -f "$squashfs_file" ] && squashfs_file="$extract_dir/casper/filesystem.squashfs"
         local squashfs_size=$(stat -f%z "$squashfs_file" 2>/dev/null || stat -c%s "$squashfs_file" 2>/dev/null || echo "0")
         if [ "$squashfs_size" -gt 4294967296 ]; then
-            log_warn "Squashfs is >4GB (${squashfs_size} bytes), using UDF filesystem..."
-            # Use UDF for files >4GB
-            local xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -udf -J -l"
+            log_warn "Squashfs is >4GB (${squashfs_size} bytes), using ISO level 4..."
+            # Use ISO level 4 (ISO9660 version 2) which supports larger files
+            local xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -iso-level 4 -J -l"
         else
             local xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -cache-inodes -J -l"
         fi
