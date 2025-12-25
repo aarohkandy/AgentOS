@@ -5,8 +5,7 @@ anos-builder/anos-build/
 *.iso
 *.iso.tmp
 *.iso.tmp.*
-# But allow anos.iso to be tracked (it's the final output)
-!anos.iso
+# Note: anos.iso is too large for GitHub, kept locally only
 
 # Python
 __pycache__/
