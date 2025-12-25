@@ -451,22 +451,48 @@ build_iso() {
     
     local extract_dir="$BUILD_DIR/extracted"
     
-    log_info "Detecting bootloader..."
+    log_info "Configuring bootloader for UEFI and BIOS compatibility..."
     
-    # Detect bootloader type
-    local boot_opts=""
+    # Find existing BIOS boot image
+    local bios_boot_img=""
+    if [ -f "$extract_dir/boot/grub/i386-pc/eltorito.img" ]; then
+        bios_boot_img="$extract_dir/boot/grub/i386-pc/eltorito.img"
+        log_info "Found existing BIOS boot image (eltorito.img)"
+    elif [ -f "$extract_dir/boot/grub/i386-pc/boot.img" ]; then
+        bios_boot_img="$extract_dir/boot/grub/i386-pc/boot.img"
+        log_info "Found existing BIOS boot image (boot.img)"
+    fi
+    
+    # Configure boot options for BOTH UEFI and BIOS
+    local bios_boot_opts=""
+    local uefi_boot_opts=""
+    
+    # BIOS boot (El Torito)
     if [ -f "$extract_dir/isolinux/isolinux.bin" ]; then
-        log_info "Using isolinux bootloader"
-        boot_opts="-b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
-    elif [ -f "$extract_dir/boot/grub/efi.img" ]; then
-        log_info "Using EFI bootloader"
-        boot_opts="-e boot/grub/efi.img -no-emul-boot"
+        log_info "Using isolinux for BIOS boot"
+        bios_boot_opts="-b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
+    elif [ -n "$bios_boot_img" ]; then
+        local bios_path="${bios_boot_img#$extract_dir/}"
+        log_info "Using GRUB BIOS boot image: $bios_path"
+        bios_boot_opts="-b $bios_path -no-emul-boot -boot-load-size 4 -boot-info-table"
+    fi
+    
+    # UEFI boot
+    if [ -f "$extract_dir/boot/grub/efi.img" ]; then
+        log_info "Using EFI boot image"
+        uefi_boot_opts="-eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot"
     elif [ -f "$extract_dir/EFI/boot/bootx64.efi" ]; then
         log_info "Using EFI bootloader (EFI/boot)"
-        boot_opts="-e EFI/boot/bootx64.efi -no-emul-boot"
-    else
+        uefi_boot_opts="-eltorito-alt-boot -e EFI/boot/bootx64.efi -no-emul-boot"
+    fi
+    
+    # Combine boot options
+    local boot_opts="$bios_boot_opts $uefi_boot_opts"
+    
+    if [ -z "$boot_opts" ]; then
         log_warn "No bootloader found, creating non-bootable ISO"
-        boot_opts=""
+    else
+        log_info "Boot configuration: BIOS=$([ -n "$bios_boot_opts" ] && echo "yes" || echo "no"), UEFI=$([ -n "$uefi_boot_opts" ] && echo "yes" || echo "no")"
     fi
     
     log_info "Creating ISO image..."
@@ -485,9 +511,11 @@ build_iso() {
         fi
         if [ -n "$boot_opts" ]; then
             xorriso_cmd="$xorriso_cmd $boot_opts"
-            if [ -f "$extract_dir/boot/grub/efi.img" ] || [ -f "$extract_dir/EFI/boot/bootx64.efi" ]; then
-                xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
-            fi
+            # Always add isohybrid flags for both UEFI and BIOS compatibility
+            xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
+        else
+            # Even without explicit boot options, make it hybrid
+            xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
         fi
         xorriso_cmd="$xorriso_cmd -o \"$ISO_OUTPUT\" \"$extract_dir\""
         
@@ -523,8 +551,10 @@ build_iso() {
     
     echo ""
     
+    # Make ISO bootable for both UEFI and BIOS
     if command -v isohybrid &> /dev/null; then
-        sudo isohybrid "$ISO_OUTPUT" 2>/dev/null || true
+        log_info "Making ISO bootable for UEFI and BIOS..."
+        sudo isohybrid --uefi "$ISO_OUTPUT" 2>/dev/null || sudo isohybrid "$ISO_OUTPUT" 2>/dev/null || true
     fi
     
     local size=$(du -h "$ISO_OUTPUT" | cut -f1)
