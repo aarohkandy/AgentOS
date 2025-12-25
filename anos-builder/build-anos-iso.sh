@@ -382,33 +382,51 @@ configure_calamares() {
     
     # Create autostart script to launch Calamares on boot
     log_info "Creating Calamares autostart..."
-    sudo mkdir -p "$CHROOT_DIR/etc/systemd/system/getty@tty1.service.d"
-    sudo tee "$CHROOT_DIR/etc/systemd/system/getty@tty1.service.d/autologin.conf" > /dev/null <<EOF
+    
+    # Create systemd service to auto-start Calamares
+    sudo mkdir -p "$CHROOT_DIR/etc/systemd/system"
+    sudo tee "$CHROOT_DIR/etc/systemd/system/calamares-autostart.service" > /dev/null <<'EOFSVC'
+[Unit]
+Description=ANOS Calamares Installer Autostart
+After=graphical.target
+Wants=graphical.target
+
 [Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin root --noclear %I \$TERM
-EOF
+Type=simple
+ExecStart=/usr/bin/calamares --no-sandbox
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+
+[Install]
+WantedBy=graphical.target
+EOFSVC
     
-    # Create script to auto-start Calamares
-    sudo tee "$CHROOT_DIR/root/start-calamares.sh" > /dev/null <<'EOFCAL'
+    # Enable the service
+    sudo chmod 644 "$CHROOT_DIR/etc/systemd/system/calamares-autostart.service"
+    
+    # Also create a script for manual launch
+    sudo tee "$CHROOT_DIR/usr/local/bin/start-calamares" > /dev/null <<'EOFCAL'
 #!/bin/bash
-# Auto-start Calamares installer on boot
-
-# Wait for display
-sleep 2
-
-# Start X server if not running
-if [ -z "$DISPLAY" ]; then
-    export DISPLAY=:0
-    startx /usr/bin/calamares --no-sandbox &
-else
-    /usr/bin/calamares --no-sandbox &
-fi
+# Start Calamares installer
+export DISPLAY=:0
+/usr/bin/calamares --no-sandbox
 EOFCAL
-    sudo chmod +x "$CHROOT_DIR/root/start-calamares.sh"
+    sudo chmod +x "$CHROOT_DIR/usr/local/bin/start-calamares"
     
-    # Add to .bashrc for root
-    echo 'if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then /root/start-calamares.sh; fi' | sudo tee -a "$CHROOT_DIR/root/.bashrc" > /dev/null
+    # Create desktop autostart entry
+    sudo mkdir -p "$CHROOT_DIR/etc/xdg/autostart"
+    sudo tee "$CHROOT_DIR/etc/xdg/autostart/calamares.desktop" > /dev/null <<'EOFDESKTOP'
+[Desktop Entry]
+Type=Application
+Name=ANOS Installer
+Comment=Install ANOS Operating System
+Exec=/usr/bin/calamares --no-sandbox
+Icon=calamares
+Terminal=false
+Categories=System;
+X-KDE-autostart-enabled=true
+EOFDESKTOP
 }
 
 # Update ISO files
