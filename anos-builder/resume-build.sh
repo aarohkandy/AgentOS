@@ -36,8 +36,9 @@ if mksquashfs -help 2>&1 | grep -q "processors"; then
 fi
 
 echo "Starting mksquashfs (should show progress immediately)..."
+# Quote exclude pattern to prevent shell expansion
 sudo mksquashfs "$CHROOT_DIR" "$squashfs_path" \
-    $compress_opts -e boot/boot* -progress 2>&1 | \
+    $compress_opts -e 'boot/boot*' -progress 2>&1 | \
 while IFS= read -r line; do
     if [[ $line =~ ([0-9]+)% ]]; then
         percent="${BASH_REMATCH[1]}"
