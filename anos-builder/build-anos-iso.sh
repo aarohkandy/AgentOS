@@ -440,6 +440,10 @@ update_iso_files() {
     if [ -f "$SCRIPT_DIR/grub-custom.cfg" ]; then
         sudo cp "$SCRIPT_DIR/grub-custom.cfg" "$extract_dir/boot/grub/grub.cfg"
         log_info "GRUB config updated in ISO"
+        
+        # Note: We don't regenerate the boot image - it reads grub.cfg from ISO
+        # The original eltorito.img is fine, it just needs to find our grub.cfg
+        log_info "GRUB boot image will use updated grub.cfg from ISO filesystem"
     fi
     
     # Regenerate manifest
