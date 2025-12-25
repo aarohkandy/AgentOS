@@ -45,26 +45,27 @@ if mksquashfs -help 2>&1 | grep -q "processors"; then
 fi
 
 echo "Starting mksquashfs (should show progress immediately)..."
-echo "This may take 2-5 minutes for 8GB+ filesystem..."
+echo "This may take 2-5 minutes for 8.2GB filesystem..."
+echo ""
 # Quote exclude patterns and exclude virtual filesystems
-# Use -no-progress flag and parse output manually for better visibility
+# Run mksquashfs and show all output (progress bar format: [====] X/Y   Z%)
 sudo mksquashfs "$CHROOT_DIR" "$squashfs_path" \
     $compress_opts -e 'boot/boot*' -e 'proc' -e 'sys' -e 'dev' -e 'run' -e 'tmp' \
-    -progress -info 2>&1 | \
+    -progress 2>&1 | \
 while IFS= read -r line; do
-    # Show all progress lines
-    if [[ $line =~ ([0-9]+)% ]]; then
-        percent="${BASH_REMATCH[1]}"
-        echo -ne "\rCreating squashfs: ${percent}%"
-    elif [[ $line =~ (Creating|Writing|Processing|Parallel|filesystem) ]]; then
-        echo ""
+    # Show progress bar lines (format: [====] X/Y   Z%)
+    if [[ $line =~ \[.*\]\ ([0-9]+)/([0-9]+)\ +([0-9]+)% ]]; then
+        current="${BASH_REMATCH[1]}"
+        total="${BASH_REMATCH[2]}"
+        percent="${BASH_REMATCH[3]}"
+        echo -ne "\rCreating squashfs: ${percent}% (${current}/${total} files)"
+    # Show other important status lines
+    elif [[ $line =~ (Creating|Parallel|filesystem|block size) ]]; then
         echo "$line"
-    elif [[ $line =~ ^[0-9] ]]; then
-        # Show file count lines
-        echo -ne "\r$line"
-    else
-        # Show other important lines
-        if [[ ! $line =~ (ignoring|Failed to read) ]]; then
+    # Filter out noise but show everything else
+    elif [[ ! $line =~ (ignoring|Failed to read|Cannot stat) ]]; then
+        # Only show non-empty lines
+        if [[ -n "$line" ]]; then
             echo "$line"
         fi
     fi
