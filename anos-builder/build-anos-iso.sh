@@ -472,7 +472,17 @@ build_iso() {
     log_info "Creating ISO image..."
     
     if command -v xorriso &> /dev/null; then
-        local xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -cache-inodes -J -l"
+        # Check if squashfs is >4GB (ISO 9660 limit)
+        local squashfs_file="$extract_dir/install/filesystem.squashfs"
+        [ ! -f "$squashfs_file" ] && squashfs_file="$extract_dir/casper/filesystem.squashfs"
+        local squashfs_size=$(stat -f%z "$squashfs_file" 2>/dev/null || stat -c%s "$squashfs_file" 2>/dev/null || echo "0")
+        if [ "$squashfs_size" -gt 4294967296 ]; then
+            log_warn "Squashfs is >4GB (${squashfs_size} bytes), using UDF filesystem..."
+            # Use UDF for files >4GB
+            local xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -udf -J -l"
+        else
+            local xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -cache-inodes -J -l"
+        fi
         if [ -n "$boot_opts" ]; then
             xorriso_cmd="$xorriso_cmd $boot_opts"
             if [ -f "$extract_dir/boot/grub/efi.img" ] || [ -f "$extract_dir/EFI/boot/bootx64.efi" ]; then
