@@ -366,12 +366,49 @@ configure_calamares() {
     
     log_info "Calamares configured"
     
+    # Replace GRUB config with ANOS branding and direct boot to installer
+    log_info "Configuring GRUB for ANOS..."
+    if [ -f "$SCRIPT_DIR/grub-custom.cfg" ]; then
+        sudo cp "$SCRIPT_DIR/grub-custom.cfg" "$CHROOT_DIR/boot/grub/grub.cfg"
+        log_info "Custom GRUB config applied"
+    fi
+    
     # Ensure EFI bootloader can find grub.cfg
-    if [ -f "$CHROOT_DIR/boot/grub/grub.cfg" ] && [ ! -f "$CHROOT_DIR/EFI/BOOT/grub.cfg" ]; then
+    if [ -f "$CHROOT_DIR/boot/grub/grub.cfg" ]; then
         log_info "Creating EFI grub.cfg for UEFI boot..."
         sudo mkdir -p "$CHROOT_DIR/EFI/BOOT"
         sudo cp "$CHROOT_DIR/boot/grub/grub.cfg" "$CHROOT_DIR/EFI/BOOT/grub.cfg" 2>/dev/null || true
     fi
+    
+    # Create autostart script to launch Calamares on boot
+    log_info "Creating Calamares autostart..."
+    sudo mkdir -p "$CHROOT_DIR/etc/systemd/system/getty@tty1.service.d"
+    sudo tee "$CHROOT_DIR/etc/systemd/system/getty@tty1.service.d/autologin.conf" > /dev/null <<EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I \$TERM
+EOF
+    
+    # Create script to auto-start Calamares
+    sudo tee "$CHROOT_DIR/root/start-calamares.sh" > /dev/null <<'EOFCAL'
+#!/bin/bash
+# Auto-start Calamares installer on boot
+
+# Wait for display
+sleep 2
+
+# Start X server if not running
+if [ -z "$DISPLAY" ]; then
+    export DISPLAY=:0
+    startx /usr/bin/calamares --no-sandbox &
+else
+    /usr/bin/calamares --no-sandbox &
+fi
+EOFCAL
+    sudo chmod +x "$CHROOT_DIR/root/start-calamares.sh"
+    
+    # Add to .bashrc for root
+    echo 'if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then /root/start-calamares.sh; fi' | sudo tee -a "$CHROOT_DIR/root/.bashrc" > /dev/null
 }
 
 # Update ISO files
@@ -379,6 +416,13 @@ update_iso_files() {
     log_step "Updating ISO files..."
     
     local extract_dir="$BUILD_DIR/extracted"
+    
+    # Update GRUB config in extracted ISO
+    log_info "Updating GRUB configuration in ISO..."
+    if [ -f "$SCRIPT_DIR/grub-custom.cfg" ]; then
+        sudo cp "$SCRIPT_DIR/grub-custom.cfg" "$extract_dir/boot/grub/grub.cfg"
+        log_info "GRUB config updated in ISO"
+    fi
     
     # Regenerate manifest
     sudo chmod +w "$extract_dir/casper/filesystem.manifest" 2>/dev/null || true
