@@ -400,8 +400,9 @@ update_iso_files() {
     fi
     
     log_info "Starting mksquashfs (this should show progress immediately)..."
+    # Quote the exclude pattern to prevent shell expansion (especially in fish)
     sudo mksquashfs "$CHROOT_DIR" "$squashfs_path" \
-        $compress_opts -e boot/boot* -progress 2>&1 | \
+        $compress_opts -e 'boot/boot*' -progress 2>&1 | \
     while IFS= read -r line; do
         if [[ $line =~ ([0-9]+)% ]]; then
             local percent="${BASH_REMATCH[1]}"
