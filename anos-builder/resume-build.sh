@@ -45,18 +45,28 @@ if mksquashfs -help 2>&1 | grep -q "processors"; then
 fi
 
 echo "Starting mksquashfs (should show progress immediately)..."
+echo "This may take 2-5 minutes for 8GB+ filesystem..."
 # Quote exclude patterns and exclude virtual filesystems
+# Use -no-progress flag and parse output manually for better visibility
 sudo mksquashfs "$CHROOT_DIR" "$squashfs_path" \
-    $compress_opts -e 'boot/boot*' -e 'proc' -e 'sys' -e 'dev' -e 'run' -e 'tmp' -progress 2>&1 | \
+    $compress_opts -e 'boot/boot*' -e 'proc' -e 'sys' -e 'dev' -e 'run' -e 'tmp' \
+    -progress -info 2>&1 | \
 while IFS= read -r line; do
+    # Show all progress lines
     if [[ $line =~ ([0-9]+)% ]]; then
         percent="${BASH_REMATCH[1]}"
         echo -ne "\rCreating squashfs: ${percent}%"
-    elif [[ $line =~ (Creating|Writing|Processing) ]]; then
+    elif [[ $line =~ (Creating|Writing|Processing|Parallel|filesystem) ]]; then
         echo ""
         echo "$line"
+    elif [[ $line =~ ^[0-9] ]]; then
+        # Show file count lines
+        echo -ne "\r$line"
     else
-        echo "$line"
+        # Show other important lines
+        if [[ ! $line =~ (ignoring|Failed to read) ]]; then
+            echo "$line"
+        fi
     fi
 done
 echo ""
