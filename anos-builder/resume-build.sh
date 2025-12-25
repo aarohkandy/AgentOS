@@ -110,22 +110,37 @@ fi
 
 if command -v xorriso &> /dev/null; then
     # Check if squashfs is >4GB (ISO 9660 limit)
-    squashfs_size=$(stat -f%z "$EXTRACT_DIR/install/filesystem.squashfs" 2>/dev/null || stat -c%s "$EXTRACT_DIR/install/filesystem.squashfs" 2>/dev/null || echo "0")
+    squashfs_file="$EXTRACT_DIR/install/filesystem.squashfs"
+    [ ! -f "$squashfs_file" ] && squashfs_file="$EXTRACT_DIR/casper/filesystem.squashfs"
+    squashfs_size=$(stat -f%z "$squashfs_file" 2>/dev/null || stat -c%s "$squashfs_file" 2>/dev/null || echo "0")
     if [ "$squashfs_size" -gt 4294967296 ]; then
-        echo "Squashfs is >4GB, using UDF filesystem (supports large files)..."
-        # Use UDF for files >4GB
-        xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -udf -J -l"
+        echo "Squashfs is >4GB (${squashfs_size} bytes), using xorriso native mode with UDF..."
+        # Use xorriso native mode to create UDF filesystem for files >4GB
+        # First add all files, then create UDF filesystem
+        sudo xorriso -dev "$ISO_OUTPUT" -volid "ANOS" -map "$EXTRACT_DIR" / -commit -udf 2>&1
+        xorriso_exit=$?
+        if [ $xorriso_exit -eq 0 ]; then
+            echo "UDF ISO created successfully"
+        else
+            echo "UDF creation failed, trying alternative method..."
+            # Fallback: try with -iso-level 4 (ISO9660 version 2)
+            xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -iso-level 4 -J -l"
+        fi
     else
         xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -cache-inodes -J -l"
     fi
-    if [ -n "$boot_opts" ]; then
-        xorriso_cmd="$xorriso_cmd $boot_opts"
-        if [ -f "$EXTRACT_DIR/boot/grub/efi.img" ] || [ -f "$EXTRACT_DIR/EFI/boot/bootx64.efi" ]; then
-            xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
+    
+    # Only run mkisofs mode if we didn't use native mode
+    if [ -n "$xorriso_cmd" ]; then
+        if [ -n "$boot_opts" ]; then
+            xorriso_cmd="$xorriso_cmd $boot_opts"
+            if [ -f "$EXTRACT_DIR/boot/grub/efi.img" ] || [ -f "$EXTRACT_DIR/EFI/boot/bootx64.efi" ]; then
+                xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
+            fi
         fi
+        xorriso_cmd="$xorriso_cmd -o \"$ISO_OUTPUT\" \"$EXTRACT_DIR\""
+        eval "$xorriso_cmd"
     fi
-    xorriso_cmd="$xorriso_cmd -o \"$ISO_OUTPUT\" \"$EXTRACT_DIR\""
-    eval "$xorriso_cmd"
 else
     geniso_cmd="sudo genisoimage -r -V \"ANOS\" -cache-inodes -J -l"
     if [ -n "$boot_opts" ]; then
