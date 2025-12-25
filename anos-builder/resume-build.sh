@@ -162,11 +162,13 @@ if command -v xorriso &> /dev/null; then
     # Only run mkisofs mode if we didn't use native mode
     if [ -n "$xorriso_cmd" ]; then
         if [ -n "$boot_opts" ]; then
+            echo "Adding boot options: $boot_opts"
             xorriso_cmd="$xorriso_cmd $boot_opts"
             # Always add isohybrid flags for both UEFI and BIOS compatibility
             xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
         fi
         xorriso_cmd="$xorriso_cmd -o \"$ISO_OUTPUT\" \"$EXTRACT_DIR\""
+        echo "Running: $xorriso_cmd"
         eval "$xorriso_cmd"
     fi
 else
