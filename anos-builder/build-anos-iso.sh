@@ -437,16 +437,38 @@ update_iso_files() {
     
     # Update GRUB config in extracted ISO
     log_info "Updating GRUB configuration in ISO..."
-    if [ -f "$SCRIPT_DIR/grub-custom.cfg" ]; then
-        sudo cp "$SCRIPT_DIR/grub-custom.cfg" "$extract_dir/boot/grub/grub.cfg"
-        # Also update loopback.cfg (used when booting from ISO)
-        sudo cp "$SCRIPT_DIR/grub-custom.cfg" "$extract_dir/boot/grub/loopback.cfg"
-        log_info "GRUB config updated in ISO (grub.cfg and loopback.cfg)"
-        
-        # Note: We don't regenerate the boot image - it reads grub.cfg from ISO
-        # The original eltorito.img is fine, it just needs to find our grub.cfg
-        log_info "GRUB boot image will use updated grub.cfg from ISO filesystem"
+    
+    # Detect actual initrd filename
+    local initrd_file=$(find "$extract_dir/casper" -name "initrd*" -printf "%f\n" | head -n 1)
+    if [ -z "$initrd_file" ]; then
+        initrd_file=$(find "$extract_dir/install" -name "initrd*" -printf "%f\n" | head -n 1)
     fi
+    
+    if [ -n "$initrd_file" ]; then
+        log_info "Detected initrd file: $initrd_file"
+        
+        # Create a temporary grub config with correct initrd name
+        if [ -f "$SCRIPT_DIR/grub-custom.cfg" ]; then
+            cp "$SCRIPT_DIR/grub-custom.cfg" "$BUILD_DIR/grub.cfg.tmp"
+            
+            # Replace /casper/initrd with actual path
+            sed -i "s|/casper/initrd|/casper/$initrd_file|g" "$BUILD_DIR/grub.cfg.tmp"
+            
+            sudo cp "$BUILD_DIR/grub.cfg.tmp" "$extract_dir/boot/grub/grub.cfg"
+            sudo cp "$BUILD_DIR/grub.cfg.tmp" "$extract_dir/boot/grub/loopback.cfg"
+            rm -f "$BUILD_DIR/grub.cfg.tmp"
+            
+            log_info "GRUB config updated with initrd: $initrd_file"
+        fi
+    else
+        log_warn "Could not detect initrd file, using default config"
+        if [ -f "$SCRIPT_DIR/grub-custom.cfg" ]; then
+            sudo cp "$SCRIPT_DIR/grub-custom.cfg" "$extract_dir/boot/grub/grub.cfg"
+            sudo cp "$SCRIPT_DIR/grub-custom.cfg" "$extract_dir/boot/grub/loopback.cfg"
+        fi
+    fi
+    
+    
     
     # Regenerate manifest
     sudo chmod +w "$extract_dir/casper/filesystem.manifest" 2>/dev/null || true
