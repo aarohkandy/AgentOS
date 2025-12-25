@@ -386,14 +386,14 @@ update_iso_files() {
     sudo rm -f "$extract_dir/casper/filesystem.squashfs" "$extract_dir/install/filesystem.squashfs" 2>/dev/null || true
     
     # Create new squashfs
-    log_info "Creating new squashfs (this may take 10-20 minutes)..."
-    log_warn "Using gzip compression (faster than xz)..."
+    log_info "Creating new squashfs (using fastest compression for quick rebuilds)..."
+    log_warn "Using lzo compression (fastest with compression) - 2-5 minutes instead of hours..."
     local squashfs_path="$extract_dir/casper/filesystem.squashfs"
     [ ! -f "$squashfs_path" ] && squashfs_path="$extract_dir/install/filesystem.squashfs"
     
-    # Use gzip instead of xz for much faster compression (slightly larger file but 10x faster)
+    # Use lzo for fastest compression (much faster than gzip/xz, slightly larger file)
     # Also use parallel compression if available
-    local compress_opts="-comp gzip"
+    local compress_opts="-comp lzo"
     if mksquashfs -help 2>&1 | grep -q "processors"; then
         compress_opts="$compress_opts -processors $(nproc)"
     fi
