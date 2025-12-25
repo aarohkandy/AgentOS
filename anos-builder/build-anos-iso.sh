@@ -442,35 +442,65 @@ build_iso() {
     
     local extract_dir="$BUILD_DIR/extracted"
     
+    log_info "Detecting bootloader..."
+    
+    # Detect bootloader type
+    local boot_opts=""
+    if [ -f "$extract_dir/isolinux/isolinux.bin" ]; then
+        log_info "Using isolinux bootloader"
+        boot_opts="-b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
+    elif [ -f "$extract_dir/boot/grub/efi.img" ]; then
+        log_info "Using EFI bootloader"
+        boot_opts="-e boot/grub/efi.img -no-emul-boot"
+    elif [ -f "$extract_dir/EFI/boot/bootx64.efi" ]; then
+        log_info "Using EFI bootloader (EFI/boot)"
+        boot_opts="-e EFI/boot/bootx64.efi -no-emul-boot"
+    else
+        log_warn "No bootloader found, creating non-bootable ISO"
+        boot_opts=""
+    fi
+    
     log_info "Creating ISO image..."
     
     if command -v xorriso &> /dev/null; then
-        sudo xorriso -as mkisofs \
-            -r -V "ANOS" \
-            -cache-inodes -J -l \
-            -b isolinux/isolinux.bin \
-            -c isolinux/boot.cat \
-            -no-emul-boot -boot-load-size 4 -boot-info-table \
-            -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot \
-            -isohybrid-gpt-basdat \
-            -isohybrid-apm-hfsplus \
-            -o "$ISO_OUTPUT" \
-            "$extract_dir" 2>&1 | \
+        local xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -cache-inodes -J -l"
+        if [ -n "$boot_opts" ]; then
+            xorriso_cmd="$xorriso_cmd $boot_opts"
+            if [ -f "$extract_dir/boot/grub/efi.img" ] || [ -f "$extract_dir/EFI/boot/bootx64.efi" ]; then
+                xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
+            fi
+        fi
+        xorriso_cmd="$xorriso_cmd -o \"$ISO_OUTPUT\" \"$extract_dir\""
+        
+        eval "$xorriso_cmd" 2>&1 | \
         while IFS= read -r line; do
-            log_progress "Building: $line"
+            if [[ $line =~ (FAILURE|ERROR|error|Error) ]]; then
+                log_error "$line"
+            else
+                log_progress "Building: $line"
+            fi
         done
     else
-        sudo genisoimage -r -V "ANOS" \
-            -cache-inodes -J -l \
-            -b isolinux/isolinux.bin \
-            -c isolinux/boot.cat \
-            -no-emul-boot -boot-load-size 4 -boot-info-table \
-            -o "$ISO_OUTPUT" \
-            "$extract_dir" 2>&1 | \
+        local geniso_cmd="sudo genisoimage -r -V \"ANOS\" -cache-inodes -J -l"
+        if [ -n "$boot_opts" ]; then
+            geniso_cmd="$geniso_cmd $boot_opts"
+        fi
+        geniso_cmd="$geniso_cmd -o \"$ISO_OUTPUT\" \"$extract_dir\""
+        
+        eval "$geniso_cmd" 2>&1 | \
         while IFS= read -r line; do
             log_progress "Building: $line"
         done
     fi
+    
+    # Verify ISO was created
+    if [ ! -f "$ISO_OUTPUT" ]; then
+        log_error "ISO creation failed! No ISO file found at $ISO_OUTPUT"
+        return 1
+    fi
+    
+    local iso_size=$(du -h "$ISO_OUTPUT" | cut -f1)
+    log_info "ISO created successfully: $ISO_OUTPUT (${iso_size})"
     
     echo ""
     
@@ -511,9 +541,17 @@ main() {
     echo -e "${GREEN}║                                                                    ║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    log_info "ISO file: $ISO_OUTPUT"
+    # Verify ISO exists before claiming success
+    if [ ! -f "$ISO_OUTPUT" ]; then
+        log_error "Build failed - ISO file not found!"
+        log_error "Check $BUILD_LOG for details"
+        exit 1
+    fi
     
-    # Auto-push to GitHub
+    local iso_size=$(du -h "$ISO_OUTPUT" | cut -f1)
+    log_info "ISO file: $ISO_OUTPUT (${iso_size})"
+    
+    # Auto-push to GitHub only if build succeeded
     log_step "Pushing to GitHub..."
     cd "$SCRIPT_DIR/.."
     if git rev-parse --git-dir > /dev/null 2>&1; then
