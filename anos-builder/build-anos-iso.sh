@@ -365,6 +365,13 @@ configure_calamares() {
     fi
     
     log_info "Calamares configured"
+    
+    # Ensure EFI bootloader can find grub.cfg
+    if [ -f "$CHROOT_DIR/boot/grub/grub.cfg" ] && [ ! -f "$CHROOT_DIR/EFI/BOOT/grub.cfg" ]; then
+        log_info "Creating EFI grub.cfg for UEFI boot..."
+        sudo mkdir -p "$CHROOT_DIR/EFI/BOOT"
+        sudo cp "$CHROOT_DIR/boot/grub/grub.cfg" "$CHROOT_DIR/EFI/BOOT/grub.cfg" 2>/dev/null || true
+    fi
 }
 
 # Update ISO files
