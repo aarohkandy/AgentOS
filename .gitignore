@@ -1,11 +1,34 @@
-core/ai-engine/models/*
-!core/ai-engine/models/.gitkeep
-*.pyc
+# Build artifacts
+iso-build/
+anos-build/
+*.iso
+*.iso.tmp
+
+# Python
 __pycache__/
-*.log
-.env
-.vscode/
-*.swp
-dist/
-build/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
 *.egg-info/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.bak
+*~

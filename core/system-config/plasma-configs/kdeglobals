@@ -1,11 +1,14 @@
 # Cosmic OS KDE Global Settings
+# Copy to ~/.config/kdeglobals
 
 [ColorEffects:Disabled]
+ChangeSelectionColor=
 Color=56,56,56
 ColorAmount=0
 ColorEffect=0
 ContrastAmount=0.65
 ContrastEffect=1
+Enable=
 IntensityAmount=0.1
 IntensityEffect=2
 
@@ -24,28 +27,27 @@ IntensityEffect=0
 AccentColor=0,120,212
 BrowserApplication=firefox.desktop
 ColorScheme=CosmicDark
-ColorSchemeHash=f5b2c67f12e37dd58a2f9bf7e08ec7a6a8afa689
+ColorSchemeHash=
 Name=Cosmic Dark
 TerminalApplication=konsole
 TerminalService=org.kde.konsole.desktop
 XftAntialias=true
 XftHintStyle=hintslight
 XftSubPixel=rgb
-fixed=Monospace,10,-1,5,50,0,0,0,0,0
-font=Noto Sans,10,-1,5,50,0,0,0,0,0
-menuFont=Noto Sans,10,-1,5,50,0,0,0,0,0
-smallestReadableFont=Noto Sans,8,-1,5,50,0,0,0,0,0
-toolBarFont=Noto Sans,10,-1,5,50,0,0,0,0,0
+fixed=JetBrains Mono,10,-1,5,50,0,0,0,0,0
+font=Inter,10,-1,5,50,0,0,0,0,0
+menuFont=Inter,10,-1,5,50,0,0,0,0,0
+smallestReadableFont=Inter,8,-1,5,50,0,0,0,0,0
+toolBarFont=Inter,10,-1,5,50,0,0,0,0,0
 
 [Icons]
-Theme=breeze-dark
+Theme=Papirus-Dark
 
 [KDE]
 AnimationDurationFactor=0.5
 LookAndFeelPackage=org.kde.breezedark.desktop
 ShowDeleteCommand=true
 SingleClick=false
-contrast=4
 widgetStyle=Breeze
 
 [KFileDialog Settings]
@@ -53,8 +55,8 @@ Allow Expansion=false
 Automatically select filename extension=true
 Breadcrumb Navigation=true
 Decoration position=2
-LocationCombo Completionmode=5
-PathCombo Completionmode=5
+LocationCombo Coverage=0.44
+Preview Width=434
 Show Bookmarks=false
 Show Full Path=false
 Show Inline Previews=true
@@ -65,13 +67,13 @@ Sort by=Name
 Sort directories first=true
 Sort hidden files last=false
 Sort reversed=false
-Speedbar Width=148
+Speedbar Width=138
 View Style=DetailTree
 
-[PreviewSettings]
-MaximumRemoteSize=0
-MaximumSize=104857600
-
-[Shortcuts]
-Help=
-WhatsThis=
+[WM]
+activeBackground=37,37,37
+activeBlend=224,224,224
+activeForeground=224,224,224
+inactiveBackground=30,30,30
+inactiveBlend=160,160,160
+inactiveForeground=160,160,160

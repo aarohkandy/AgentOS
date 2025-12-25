@@ -1,15 +1,12 @@
 [Desktop Entry]
 Type=Application
 Name=Cosmic AI
-GenericName=AI Assistant
-Comment=Cosmic OS AI-powered assistant
-Exec=/usr/bin/python3 -m core.ai_engine.main
-Icon=cosmic-ai
+Comment=AI Assistant for Cosmic OS
+Exec=/usr/bin/python3 /opt/cosmic-os/core/ai_engine/main.py
+Icon=applications-science
 Terminal=false
 Categories=System;Utility;
 StartupNotify=false
-X-GNOME-Autostart-enabled=true
-X-KDE-autostart-after=panel
 X-KDE-autostart-phase=2
-Hidden=false
-NoDisplay=false
+X-GNOME-Autostart-enabled=true
+OnlyShowIn=KDE;GNOME;XFCE;

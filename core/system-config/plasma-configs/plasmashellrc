@@ -1,0 +1,36 @@
+# Cosmic OS Plasma Shell Configuration
+# Copy to ~/.config/plasmashellrc
+
+[PlasmaTransientsConfig]
+enablePasteSecondStage=true
+pasteSearchResultsToHistory=true
+
+[PlasmaViews][Panel 2]
+alignment=0
+floating=1
+offset=0
+panelLengthMode=0
+panelOpacity=2
+panelVisibility=0
+thickness=44
+
+[PlasmaViews][Panel 2][Defaults]
+maxLength=
+minLength=
+thickness=44
+
+[PlasmaViews][Panel 2][Horizontal1920]
+maxLength=
+minLength=
+
+[Updates]
+performed=/usr/share/plasma/shells/org.kde.plasma.desktop/updates/keyboardlayout_migratealiases.js,/usr/share/plasma/shells/org.kde.plasma.desktop/updates/move_klipper_to_plasma_workspace.js,/usr/share/plasma/shells/org.kde.plasma.desktop/updates/maintain_existing_desktop_icon_sizes.js
+
+[WidgetExplorer]
+PlasmoidDetailsWidthBase=320
+
+[WidgetExplorerCategory]
+recent=-1
+
+[WidgetExplorerFilters]
+recent=

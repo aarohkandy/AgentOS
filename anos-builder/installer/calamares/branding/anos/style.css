@@ -1,0 +1,50 @@
+/* ANOS Calamares Installer Theme */
+
+* {
+    font-family: 'Inter', sans-serif;
+}
+
+QWidget {
+    background-color: #1a1a2e;
+    color: #ffffff;
+}
+
+QPushButton {
+    background-color: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 4px;
+    padding: 8px 16px;
+    color: #ffffff;
+}
+
+QPushButton:hover {
+    background-color: #0f3460;
+}
+
+QPushButton:pressed {
+    background-color: #0a1f3a;
+}
+
+QLabel {
+    color: #ffffff;
+}
+
+QLineEdit, QTextEdit {
+    background-color: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 4px;
+    padding: 6px;
+    color: #ffffff;
+}
+
+QComboBox {
+    background-color: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 4px;
+    padding: 6px;
+    color: #ffffff;
+}
+
+
+
+

@@ -1,0 +1,33 @@
+# Packages to remove for minimal system
+# These are typically installed by default but not needed
+
+# Documentation
+doc-base
+man-db
+manpages
+info
+
+# Unnecessary apps (if any get installed)
+firefox
+thunderbird
+libreoffice
+games-*
+
+# Development tools (if not needed)
+gdb
+valgrind
+
+# Extra KDE apps (keep only core)
+kde-full
+kde-standard
+kde-telepathy
+kdeconnect
+
+# Server packages (not needed for desktop)
+openssh-server
+apache2
+nginx
+
+
+
+
