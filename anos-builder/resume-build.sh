@@ -24,13 +24,13 @@ echo "$size" | sudo tee "$EXTRACT_DIR/install/filesystem.size" > /dev/null 2>/de
 # Remove old squashfs
 sudo rm -f "$EXTRACT_DIR/casper/filesystem.squashfs" "$EXTRACT_DIR/install/filesystem.squashfs" 2>/dev/null || true
 
-# Create new squashfs with gzip (much faster)
-echo "Creating squashfs with gzip compression (10-20 minutes instead of hours)..."
+# Create new squashfs with lzo (fastest compression)
+echo "Creating squashfs with lzo compression (fastest - 2-5 minutes)..."
 squashfs_path="$EXTRACT_DIR/casper/filesystem.squashfs"
 [ ! -f "$squashfs_path" ] && squashfs_path="$EXTRACT_DIR/install/filesystem.squashfs"
 
-# Use gzip with parallel compression
-compress_opts="-comp gzip"
+# Use lzo for fastest compression with parallel processing
+compress_opts="-comp lzo"
 if mksquashfs -help 2>&1 | grep -q "processors"; then
     compress_opts="$compress_opts -processors $(nproc)"
 fi
