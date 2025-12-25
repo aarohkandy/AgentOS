@@ -5,6 +5,8 @@ anos-builder/anos-build/
 *.iso
 *.iso.tmp
 *.iso.tmp.*
+# But allow anos.iso to be tracked (it's the final output)
+!anos.iso
 
 # Python
 __pycache__/
