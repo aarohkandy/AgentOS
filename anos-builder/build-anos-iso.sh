@@ -500,6 +500,27 @@ main() {
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     log_info "ISO file: $ISO_OUTPUT"
+    
+    # Auto-push to GitHub
+    log_step "Pushing to GitHub..."
+    cd "$SCRIPT_DIR/.."
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add -A
+        git commit -m "ANOS build: $(date +%Y%m%d-%H%M%S)" 2>&1 | grep -v "nothing to commit" || true
+        git push origin main 2>&1 | while IFS= read -r line; do
+            if [[ $line =~ (error|Error|ERROR|rejected) ]]; then
+                log_warn "$line"
+            else
+                log_info "$line"
+            fi
+        done
+        log_info "Pushed to GitHub"
+    else
+        log_warn "Not a git repository, skipping GitHub push"
+    fi
+    
+    echo ""
+    log_info "🎉 Your ANOS ISO is ready: $ISO_OUTPUT"
     echo ""
 }
 
