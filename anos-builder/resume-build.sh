@@ -91,31 +91,50 @@ echo "Building final ISO..."
 # Single file in agentOS root that gets overwritten
 ISO_OUTPUT="$SCRIPT_DIR/../anos.iso"
 
-# Detect bootloader type - configure for BOTH UEFI and BIOS
-echo "Detecting bootloader for UEFI and BIOS compatibility..."
+# Configure for BOTH UEFI and BIOS boot
+echo "Configuring bootloader for UEFI and BIOS compatibility..."
+
+# Create BIOS boot image using grub if available
+bios_boot_img=""
+if [ -d "$EXTRACT_DIR/boot/grub/i386-pc" ]; then
+    echo "Creating BIOS boot image..."
+    # Create a standalone BIOS boot image
+    if command -v grub-mkstandalone &> /dev/null; then
+        sudo mkdir -p "$EXTRACT_DIR/boot/grub/i386-pc"
+        sudo grub-mkstandalone \
+            --format=i386-pc \
+            --output="$EXTRACT_DIR/boot/grub/i386-pc/boot.img" \
+            --install-modules="biosdisk iso9660" \
+            --modules="biosdisk iso9660" \
+            --locales="" \
+            --fonts="" \
+            "boot/grub/grub.cfg=$EXTRACT_DIR/boot/grub/grub.cfg" 2>/dev/null || true
+    fi
+    if [ -f "$EXTRACT_DIR/boot/grub/i386-pc/boot.img" ]; then
+        bios_boot_img="$EXTRACT_DIR/boot/grub/i386-pc/boot.img"
+        echo "BIOS boot image created"
+    fi
+fi
+
+# Configure boot options
 bios_boot_opts=""
 uefi_boot_opts=""
 
-# Check for BIOS bootloader (isolinux or grub-pc)
+# BIOS boot (El Torito)
 if [ -f "$EXTRACT_DIR/isolinux/isolinux.bin" ]; then
-    echo "Found isolinux (BIOS boot)"
+    echo "Using isolinux for BIOS boot"
     bios_boot_opts="-b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
-elif [ -f "$EXTRACT_DIR/boot/grub/i386-pc/core.img" ]; then
-    echo "Found GRUB BIOS bootloader"
-    # Create BIOS boot image if needed
-    if [ ! -f "$EXTRACT_DIR/boot/grub/i386-pc/boot.img" ]; then
-        echo "Creating BIOS boot image..."
-        sudo grub-mkimage -O i386-pc -o "$EXTRACT_DIR/boot/grub/i386-pc/core.img" -c "$EXTRACT_DIR/boot/grub/i386-pc/grub.cfg" biosdisk iso9660 2>/dev/null || true
-    fi
+elif [ -n "$bios_boot_img" ]; then
+    echo "Using GRUB BIOS boot image"
     bios_boot_opts="-b boot/grub/i386-pc/boot.img -no-emul-boot -boot-load-size 4 -boot-info-table"
 fi
 
-# Check for UEFI bootloader
+# UEFI boot
 if [ -f "$EXTRACT_DIR/boot/grub/efi.img" ]; then
-    echo "Found EFI boot image"
+    echo "Using EFI boot image"
     uefi_boot_opts="-eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot"
 elif [ -f "$EXTRACT_DIR/EFI/boot/bootx64.efi" ]; then
-    echo "Found EFI bootloader (EFI/boot)"
+    echo "Using EFI bootloader (EFI/boot)"
     uefi_boot_opts="-eltorito-alt-boot -e EFI/boot/bootx64.efi -no-emul-boot"
 fi
 
@@ -124,6 +143,8 @@ boot_opts="$bios_boot_opts $uefi_boot_opts"
 
 if [ -z "$boot_opts" ]; then
     echo "⚠️  No bootloader found, creating non-bootable ISO"
+else
+    echo "Boot configuration: BIOS=$([ -n "$bios_boot_opts" ] && echo "yes" || echo "no"), UEFI=$([ -n "$uefi_boot_opts" ] && echo "yes" || echo "no")"
 fi
 
 if command -v xorriso &> /dev/null; then
