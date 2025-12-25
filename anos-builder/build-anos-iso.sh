@@ -45,7 +45,8 @@ log_progress() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/anos-build"
 CHROOT_DIR="$BUILD_DIR/chroot"
-ISO_OUTPUT="$SCRIPT_DIR/anos-$(date +%Y%m%d-%H%M%S).iso"
+# ISO goes directly in agentOS root, single file that gets overwritten
+ISO_OUTPUT="$SCRIPT_DIR/../anos.iso"
 BUILD_LOG="$BUILD_DIR/build.log"
 
 # Create build directory early
@@ -386,14 +387,14 @@ update_iso_files() {
     sudo rm -f "$extract_dir/casper/filesystem.squashfs" "$extract_dir/install/filesystem.squashfs" 2>/dev/null || true
     
     # Create new squashfs
-    log_info "Creating new squashfs (using fastest compression for quick rebuilds)..."
-    log_warn "Using lzo compression (fastest with compression) - 2-5 minutes instead of hours..."
+    log_info "Creating new squashfs (no compression for maximum speed)..."
+    log_warn "Using no compression - fastest possible (30 seconds - 2 minutes)..."
     local squashfs_path="$extract_dir/casper/filesystem.squashfs"
     [ ! -f "$squashfs_path" ] && squashfs_path="$extract_dir/install/filesystem.squashfs"
     
-    # Use lzo for fastest compression (much faster than gzip/xz, slightly larger file)
-    # Also use parallel compression if available
-    local compress_opts="-comp lzo"
+    # No compression = fastest possible (file will be larger but builds in seconds)
+    # Also use parallel processing if available
+    local compress_opts="-no-compression"
     if mksquashfs -help 2>&1 | grep -q "processors"; then
         compress_opts="$compress_opts -processors $(nproc)"
     fi
