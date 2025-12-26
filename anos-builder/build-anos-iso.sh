@@ -323,6 +323,16 @@ install_system() {
     sudo chmod +x "$CHROOT_DIR/root/"*.sh 2>/dev/null || true
     
     # Run system installation in chroot
+    # FORCE XZ COMPRESSION FOR INITRD (Fixes "Out of Memory" in VirtualBox)
+    log_info "Configuring initramfs to use XZ compression..."
+    if [ -f "$CHROOT_DIR/etc/initramfs-tools/initramfs.conf" ]; then
+        sudo sed -i 's/COMPRESS=zstd/COMPRESS=xz/g' "$CHROOT_DIR/etc/initramfs-tools/initramfs.conf" || true
+        # If zstd wasn't set, append it
+        if ! grep -q "COMPRESS=xz" "$CHROOT_DIR/etc/initramfs-tools/initramfs.conf"; then
+            echo "COMPRESS=xz" | sudo tee -a "$CHROOT_DIR/etc/initramfs-tools/initramfs.conf" > /dev/null
+        fi
+    fi
+    
     log_info "Running system installation (this may take 15-20 minutes)..."
     sudo chroot "$CHROOT_DIR" /bin/bash /root/install-anos.sh 2>&1 | \
     while IFS= read -r line; do
