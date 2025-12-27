@@ -570,31 +570,21 @@ build_iso() {
         log_info "Found existing BIOS boot image (boot.img)"
     fi
     
-    # Configure boot options for BOTH UEFI and BIOS
-    local bios_boot_opts=""
+    # Configure boot options for UEFI ONLY
     local uefi_boot_opts=""
-    
-    # BIOS boot (El Torito)
-    if [ -f "$extract_dir/isolinux/isolinux.bin" ]; then
-        log_info "Using isolinux for BIOS boot"
-        bios_boot_opts="-b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
-    elif [ -n "$bios_boot_img" ]; then
-        local bios_path="${bios_boot_img#$extract_dir/}"
-        log_info "Using GRUB BIOS boot image: $bios_path"
-        bios_boot_opts="-b $bios_path -no-emul-boot -boot-load-size 4 -boot-info-table"
-    fi
     
     # UEFI boot
     if [ -f "$extract_dir/boot/grub/efi.img" ]; then
         log_info "Using EFI boot image"
-        uefi_boot_opts="-eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot"
+        # Standard EFI options for xorriso (no-emul-boot is key)
+        uefi_boot_opts="-e boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat"
     elif [ -f "$extract_dir/EFI/boot/bootx64.efi" ]; then
         log_info "Using EFI bootloader (EFI/boot)"
-        uefi_boot_opts="-eltorito-alt-boot -e EFI/boot/bootx64.efi -no-emul-boot"
+        uefi_boot_opts="-e EFI/boot/bootx64.efi -no-emul-boot -isohybrid-gpt-basdat"
     fi
     
-    # Combine boot options
-    local boot_opts="$bios_boot_opts $uefi_boot_opts"
+    # Combine boot options (EFI ONLY)
+    local boot_opts="$uefi_boot_opts"
     
     if [ -z "$boot_opts" ]; then
         log_warn "No bootloader found, creating non-bootable ISO"
