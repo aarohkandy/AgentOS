@@ -553,109 +553,55 @@ calculate_checksums() {
 }
 
 # Build ISO
+# Build ISO
 build_iso() {
     log_step "Building final ANOS ISO..."
     
     local extract_dir="$BUILD_DIR/extracted"
     
-    log_info "Configuring bootloader for UEFI and BIOS compatibility..."
+     # --- GRUB-MKRESCUE IMPLEMENTATION (NUCLEAR FIX) ---
+    # Instead of manually crafting xorriso flags, we delegate to the official GRUB tool.
+    # This automatically handles EFI, Legacy BIOS, Hybrid partition tables, and file placement.
     
-    # Find existing BIOS boot image
-    local bios_boot_img=""
-    if [ -f "$extract_dir/boot/grub/i386-pc/eltorito.img" ]; then
-        bios_boot_img="$extract_dir/boot/grub/i386-pc/eltorito.img"
-        log_info "Found existing BIOS boot image (eltorito.img)"
-    elif [ -f "$extract_dir/boot/grub/i386-pc/boot.img" ]; then
-        bios_boot_img="$extract_dir/boot/grub/i386-pc/boot.img"
-        log_info "Found existing BIOS boot image (boot.img)"
+    log_info "Starting ISO creation with grub-mkrescue..."
+    
+    # We must prepare the input directory structure specifically for grub-mkrescue
+    # It expects the root of the ISO content.
+    local iso_root="$extract_dir"
+    
+    # Ensure a proper grub.cfg exists for it to find
+    if [ ! -f "$iso_root/boot/grub/grub.cfg" ]; then
+        log_warn "grub.cfg not found at standard path, attempting copy..."
+        mkdir -p "$iso_root/boot/grub"
+        cp "$SCRIPT_DIR/grub-custom.cfg" "$iso_root/boot/grub/grub.cfg"
     fi
+
+    # Run grub-mkrescue
+    # --modules: pre-load modules to avoid OOM or missing functionality
+    # --install-modules: ensure these exist on the ISO
+    log_warn "Running grub-mkrescue (this takes time)..."
     
-    # Configure boot options for UEFI ONLY
-    local uefi_boot_opts=""
+    # Check if we are running on EFI or Legacy host to adjust --product options if needed
+    # But generally, just pointing it to the directory is enough.
     
-    # UEFI boot
-    if [ -f "$extract_dir/boot/grub/efi.img" ]; then
-        log_info "Using EFI boot image"
-        # Standard EFI options for xorriso (no-emul-boot is key)
-        uefi_boot_opts="-e boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat"
-    elif [ -f "$extract_dir/EFI/boot/bootx64.efi" ]; then
-        log_info "Using EFI bootloader (EFI/boot)"
-        uefi_boot_opts="-e EFI/boot/bootx64.efi -no-emul-boot -isohybrid-gpt-basdat"
-    fi
-    
-    # Combine boot options (EFI ONLY)
-    local boot_opts="$uefi_boot_opts"
-    
-    if [ -z "$boot_opts" ]; then
-        log_warn "No bootloader found, creating non-bootable ISO"
+    # Note: grub-mkrescue internally calls xorriso with strict arguments
+    # We remove explicit --install-modules that are platform specific (like biosdisk)
+    # causing build failures on EFI targets
+    sudo grub-mkrescue -o "$BUILD_DIR/anos.iso" "$iso_root" \
+        --modules="part_gpt part_msdos fat iso9660 gzio linux acpi normal cpio crypto boot" \
+        --compress=xz 2>&1 | tee -a "$BUILD_LOG"
+
+    if [ ${PIPESTATUS[0]} -eq 0 ]; then
+        log_info "ISO created successfully: $BUILD_DIR/anos.iso"
     else
-        log_info "Boot configuration: BIOS=$([ -n "$bios_boot_opts" ] && echo "yes" || echo "no"), UEFI=$([ -n "$uefi_boot_opts" ] && echo "yes" || echo "no")"
+        log_error "grub-mkrescue failed! Check $BUILD_LOG"
+        # Fallback dump of log tail for immediate debugging
+        tail -n 20 "$BUILD_LOG"
+        exit 1
     fi
-    
-    log_info "Creating ISO image..."
-    
-    if command -v xorriso &> /dev/null; then
-        # Check if squashfs is >4GB (ISO 9660 limit)
-        local squashfs_file="$extract_dir/install/filesystem.squashfs"
-        [ ! -f "$squashfs_file" ] && squashfs_file="$extract_dir/casper/filesystem.squashfs"
-        local squashfs_size=$(stat -f%z "$squashfs_file" 2>/dev/null || stat -c%s "$squashfs_file" 2>/dev/null || echo "0")
-        if [ "$squashfs_size" -gt 4294967296 ]; then
-            log_warn "Squashfs is >4GB (${squashfs_size} bytes), using ISO level 4..."
-            # Use ISO level 4 (ISO9660 version 2) which supports larger files
-            local xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -iso-level 4 -J -l"
-        else
-            local xorriso_cmd="sudo xorriso -as mkisofs -r -V \"ANOS\" -cache-inodes -J -l"
-        fi
-        if [ -n "$boot_opts" ]; then
-            xorriso_cmd="$xorriso_cmd $boot_opts"
-            # Always add isohybrid flags for both UEFI and BIOS compatibility
-            xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
-        else
-            # Even without explicit boot options, make it hybrid
-            xorriso_cmd="$xorriso_cmd -isohybrid-gpt-basdat -isohybrid-apm-hfsplus"
-        fi
-        xorriso_cmd="$xorriso_cmd -o \"$ISO_OUTPUT\" \"$extract_dir\""
-        
-        eval "$xorriso_cmd" 2>&1 | \
-        while IFS= read -r line; do
-            if [[ $line =~ (FAILURE|ERROR|error|Error) ]]; then
-                log_error "$line"
-            else
-                log_progress "Building: $line"
-            fi
-        done
-    else
-        local geniso_cmd="sudo genisoimage -r -V \"ANOS\" -cache-inodes -J -l"
-        if [ -n "$boot_opts" ]; then
-            geniso_cmd="$geniso_cmd $boot_opts"
-        fi
-        geniso_cmd="$geniso_cmd -o \"$ISO_OUTPUT\" \"$extract_dir\""
-        
-        eval "$geniso_cmd" 2>&1 | \
-        while IFS= read -r line; do
-            log_progress "Building: $line"
-        done
-    fi
-    
-    # Verify ISO was created
-    if [ ! -f "$ISO_OUTPUT" ]; then
-        log_error "ISO creation failed! No ISO file found at $ISO_OUTPUT"
-        return 1
-    fi
-    
-    local iso_size=$(du -h "$ISO_OUTPUT" | cut -f1)
-    log_info "ISO created successfully: $ISO_OUTPUT (${iso_size})"
     
     echo ""
-    
-    # Make ISO bootable for both UEFI and BIOS
-    if command -v isohybrid &> /dev/null; then
-        log_info "Making ISO bootable for UEFI and BIOS..."
-        sudo isohybrid --uefi "$ISO_OUTPUT" 2>/dev/null || sudo isohybrid "$ISO_OUTPUT" 2>/dev/null || true
-    fi
-    
-    local size=$(du -h "$ISO_OUTPUT" | cut -f1)
-    log_info "ANOS ISO created: $ISO_OUTPUT (${size})"
+    log_info "ISO files updated"
 }
 
 # Main execution
