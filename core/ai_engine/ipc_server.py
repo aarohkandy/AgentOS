@@ -97,3 +97,4 @@ class IPCServer:
             self.server.close()
             if os.path.exists(self.socket_path):
                 os.remove(self.socket_path)
+

@@ -363,3 +363,4 @@ class AccessibilityWatcher:
         """Stop listening for events."""
         self.listeners.clear()
         logger.info("Accessibility watcher stopped")
+

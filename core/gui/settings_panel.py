@@ -65,3 +65,4 @@ if __name__ == '__main__':
     window = SettingsPanel()
     window.show()
     sys.exit(app.exec())
+

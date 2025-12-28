@@ -98,7 +98,7 @@ Answer:"""
                 logger.debug(f"Safety validator (AI): Approved command sequence")
             except Exception as e:
                 logger.warning(f"Safety validator AI model error: {e}, using heuristic result")
-        
+            
         return True
 
     def _validate_logic(self, actions):
@@ -196,3 +196,4 @@ Answer:"""
         
         # Efficiency validator always passes (soft validator)
         return True
+

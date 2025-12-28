@@ -87,3 +87,4 @@ class ScreenController:
     def focus_window(self, wid):
         if wid:
             self._run(f"windowactivate {wid}")
+

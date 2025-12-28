@@ -560,10 +560,12 @@ class CosmicSidebar(QWidget):
             # Show plan for approval
             desc = result.get("description", "Generated command plan")
             
-            # Show fallback mode indicator
-            if result.get("fallback_mode"):
-                self.add_message("ℹ️ Using rule-based fallback (AI models not loaded)", is_user=False)
-                self.add_message("💡 Install models for full AI: ./scripts/install-models.sh", is_user=False)
+            # Show fallback mode indicator only for command plans (not for every message)
+            if result.get("fallback_mode") and result["plan"]:
+                # Only show once per session, or make it less intrusive
+                if not hasattr(self, '_fallback_warning_shown'):
+                    self.add_message("ℹ️ Using rule-based fallback mode. Install models for full AI: ./scripts/install-models.sh", is_user=False)
+                    self._fallback_warning_shown = True
             
             self.add_message(f"📋 {desc}", is_user=False)
             
@@ -578,7 +580,7 @@ class CosmicSidebar(QWidget):
                 # Empty plan - just show description
                 pass
         else:
-            # Regular text response
+            # Regular text response (conversational messages, help text, etc.)
             text = result.get("description", str(result))
             self.add_message(text, is_user=False)
         

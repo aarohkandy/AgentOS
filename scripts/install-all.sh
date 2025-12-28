@@ -36,19 +36,32 @@ detect_tier() {
     RAM_GB=$((RAM_KB / 1024 / 1024))
     
     HAS_GPU=false
+    GPU_VRAM_GB=0
     if command -v nvidia-smi &> /dev/null; then
         HAS_GPU=true
+        # Try to get VRAM
+        VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
+        if [ -n "$VRAM_MB" ]; then
+            GPU_VRAM_GB=$((VRAM_MB / 1024))
+        fi
     fi
     
-    if [ "$RAM_GB" -gt 16 ] || [ "$HAS_GPU" = true ]; then
-        TIER=3
-    elif [ "$RAM_GB" -ge 8 ]; then
-        TIER=2
+    # Tier detection: 4 tiers
+    if [ "$RAM_GB" -ge 64 ] || [ "$GPU_VRAM_GB" -ge 40 ]; then
+        TIER=4  # Very Powerful
+    elif [ "$RAM_GB" -ge 16 ] || [ "$GPU_VRAM_GB" -ge 8 ]; then
+        TIER=3  # Medium
+    elif [ "$RAM_GB" -ge 2 ]; then
+        TIER=2  # Low
     else
-        TIER=1
+        TIER=1  # EXTREME Easy
     fi
     
-    log_info "Detected: ${RAM_GB}GB RAM, GPU: $HAS_GPU → Tier $TIER"
+    if [ "$HAS_GPU" = true ]; then
+        log_info "Detected: ${RAM_GB}GB RAM, ${GPU_VRAM_GB}GB VRAM → Tier $TIER"
+    else
+        log_info "Detected: ${RAM_GB}GB RAM, No GPU → Tier $TIER"
+    fi
     echo ""
 }
 
@@ -70,11 +83,32 @@ install_llama_cpp() {
     fi
     
     log_info "Compiling llama-cpp-python (this may take 5-10 minutes)..."
-    pip3 install --user llama-cpp-python || {
+    
+    # Try different installation methods based on system
+    INSTALLED=false
+    
+    # Method 1: --user flag (works on Ubuntu/Debian)
+    if pip3 install --user llama-cpp-python 2>&1 | tee /tmp/llama-install.log; then
+        log_info "✓ llama-cpp-python installed with --user flag"
+        INSTALLED=true
+    # Method 2: --break-system-packages (Arch Linux)
+    elif pip3 install --break-system-packages --user llama-cpp-python 2>&1 | tee -a /tmp/llama-install.log; then
+        log_info "✓ llama-cpp-python installed (with --break-system-packages)"
+        INSTALLED=true
+    # Method 3: Try without --user (some systems)
+    elif pip3 install llama-cpp-python 2>&1 | tee -a /tmp/llama-install.log; then
+        log_info "✓ llama-cpp-python installed"
+        INSTALLED=true
+    fi
+    
+    if [ "$INSTALLED" = false ]; then
         log_error "Failed to install llama-cpp-python"
-        log_info "Try manually: pip3 install --user llama-cpp-python"
+        log_info "Try manually:"
+        log_info "  pip3 install --break-system-packages --user llama-cpp-python"
+        log_info "Or create venv: python3 -m venv venv && source venv/bin/activate && pip install llama-cpp-python"
+        log_info "Install log: /tmp/llama-install.log"
         exit 1
-    }
+    fi
     
     log_info "✓ llama-cpp-python installed"
 }
@@ -84,14 +118,14 @@ setup_model_dirs() {
     log_step "Setting up model directories..."
     
     # Create base model directory (persists)
-    mkdir -p "$BASE_MODEL_DIR"/{tier1,tier2,tier3,validators}
+    mkdir -p "$BASE_MODEL_DIR"/{tier1,tier2,tier3,tier4,validators}
     log_info "Base models: $BASE_MODEL_DIR"
     
     # Create local model directory (for symlinks)
-    mkdir -p "$LOCAL_MODEL_DIR"/{tier1,tier2,tier3,validators}
+    mkdir -p "$LOCAL_MODEL_DIR"/{tier1,tier2,tier3,tier4,validators}
     
     # Create symlinks from local to base (if base has models)
-    for tier in tier1 tier2 tier3; do
+    for tier in tier1 tier2 tier3 tier4; do
         if [ -f "$BASE_MODEL_DIR/$tier/model.gguf" ]; then
             if [ ! -L "$LOCAL_MODEL_DIR/$tier/model.gguf" ]; then
                 ln -sf "$BASE_MODEL_DIR/$tier/model.gguf" "$LOCAL_MODEL_DIR/$tier/model.gguf"

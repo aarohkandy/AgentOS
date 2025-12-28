@@ -304,3 +304,4 @@ class ActionPrimitives:
         except Exception as e:
             logger.error(f"Screenshot failed: {e}")
             return ActionResult(success=False, message=str(e))
+
