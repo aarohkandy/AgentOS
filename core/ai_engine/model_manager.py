@@ -147,29 +147,73 @@ class ModelManager:
         n_gpu_layers = -1 if self.tier >= 3 else 0
         
         # Context window based on tier (larger models support larger contexts)
+        # Increase context for systems with more RAM to utilize available memory
+        total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
         context_sizes = {
             1: 32768,  # Qwen 2.5 0.5B supports large context
             2: 8192,   # Llama 3.2 3B
-            3: 8192,   # Phi-4 14B
+            3: 8192,   # Phi-4 14B (base)
             4: 128000  # DeepSeek-V3 supports very large context
         }
         n_ctx = context_sizes.get(self.tier, 2048)
         
+        # If we have lots of RAM, increase context window to use more memory
+        # Tier 3 with 22GB+ RAM can handle larger context
+        if self.tier == 3 and total_ram_gb >= 20:
+            n_ctx = 16384  # Double the context for systems with plenty of RAM
+            logger.info(f"Detected {total_ram_gb:.1f}GB RAM - increasing context window to {n_ctx} to utilize available memory")
+        elif self.tier == 4 and total_ram_gb >= 60:
+            n_ctx = min(32768, n_ctx)  # Cap at 32K for tier 4 with lots of RAM
+            logger.info(f"Detected {total_ram_gb:.1f}GB RAM - using context window {n_ctx}")
+        
         # Calculate optimal thread count for CPU inference
         # Use all available cores, but leave 1 free for system responsiveness
         cpu_count = psutil.cpu_count(logical=True)
+        if cpu_count is None:
+            # Fallback for containerized/restricted environments
+            cpu_count = 4
+            logger.warning("Could not detect CPU count, defaulting to 4 threads")
         n_threads = max(1, cpu_count - 1) if cpu_count > 1 else cpu_count
-        logger.info(f"Using {n_threads} threads for inference (CPU cores: {cpu_count})")
+        
+        # Validate parameters before model initialization
+        n_threads, n_ctx = self._validate_model_params(n_threads, n_ctx)
+        logger.info(f"Using {n_threads} threads for inference (CPU cores: {cpu_count}, context: {n_ctx})")
         
         try:
+            # Memory optimization parameters
+            # n_batch: batch size for prompt processing (larger = faster but more memory)
+            # For tier 3 with 22GB+ RAM, we can use larger batches
+            n_batch = 512 if self.tier >= 3 else 256
+            
+            # use_mlock: lock model in RAM for better performance (requires sufficient RAM)
+            # Only enable if we have enough RAM (model size + context overhead)
+            total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+            model_size_gb = model_path.stat().st_size / (1024 ** 3)
+            use_mlock = (total_ram_gb >= model_size_gb * 2) and (total_ram_gb >= 16)
+            
+            logger.info(f"Model loading params: n_batch={n_batch}, use_mlock={use_mlock}, total_ram={total_ram_gb:.1f}GB, model_size={model_size_gb:.2f}GB")
+            
             self.main_model = llama_class(
                 model_path=str(model_path),
                 n_gpu_layers=n_gpu_layers,
                 n_ctx=n_ctx,
                 n_threads=n_threads,
+                n_batch=n_batch,
+                use_mlock=use_mlock,
                 verbose=False
             )
-            logger.info("✅ Main model loaded successfully.")
+            
+            # Log actual memory usage after loading
+            import psutil
+            process = psutil.Process()
+            mem_usage = process.memory_info().rss / (1024 ** 3)
+            logger.info(f"✅ Main model loaded successfully. Process memory: {mem_usage:.2f} GB")
+            
+            # Test model health with a simple inference
+            if not self._test_model(self.main_model):
+                logger.error("Model health check failed - model may be corrupted or incompatible")
+                self.main_model = None
+                logger.info("AI will use rule-based fallback.")
         except Exception as e:
             logger.error(f"Failed to load main model: {e}")
             logger.info("AI will use rule-based fallback.")
@@ -221,14 +265,30 @@ class ModelManager:
             try:
                 logger.info(f"Loading {name} validator from {model_path}")
                 # Use fewer threads for validators (they're smaller and faster)
-                validator_threads = max(1, min(4, psutil.cpu_count(logical=True) // 2))
-                self.validator_models[name] = LlamaClass(
+                cpu_count = psutil.cpu_count(logical=True)
+                if cpu_count is None:
+                    # Fallback for containerized/restricted environments
+                    cpu_count = 4
+                validator_threads = max(1, min(4, cpu_count // 2))
+                validator_ctx = 1024  # Smaller context for validators
+                
+                # Validate validator parameters
+                validator_threads, validator_ctx = self._validate_model_params(validator_threads, validator_ctx)
+                
+                validator_model = LlamaClass(
                     model_path=str(model_path),
-                    n_ctx=1024,  # Smaller context for validators
+                    n_ctx=validator_ctx,
                     n_threads=validator_threads,
                     verbose=False
                 )
-                logger.info(f"✓ {name.capitalize()} validator loaded successfully")
+                
+                # Test validator model health
+                if self._test_model(validator_model):
+                    self.validator_models[name] = validator_model
+                    logger.info(f"✓ {name.capitalize()} validator loaded successfully")
+                else:
+                    logger.warning(f"{name.capitalize()} validator failed health check, using heuristics")
+                    self.validator_models[name] = None
             except Exception as e:
                 logger.error(f"Failed to load {name} validator: {e}")
                 logger.info(f"  {name.capitalize()} validator will use heuristics (safe fallback)")
@@ -243,6 +303,79 @@ class ModelManager:
             logger.info(f"⚠️  {loaded}/{total} validators loaded with AI models, {total - loaded} using heuristics")
         else:
             logger.info(f"ℹ️  All {total} validators using heuristic fallback (models not available)")
+
+    def _validate_model_params(self, n_threads, n_ctx):
+        """
+        Validate and clamp model parameters to safe values.
+        
+        Args:
+            n_threads: Requested thread count
+            n_ctx: Requested context window size
+            
+        Returns:
+            Tuple of (validated_n_threads, validated_n_ctx)
+        """
+        # Validate n_threads: must be between 1 and 32
+        # Some models have issues with very high thread counts
+        MAX_THREADS = 32
+        if n_threads < 1:
+            logger.warning(f"Invalid n_threads={n_threads}, clamping to 1")
+            n_threads = 1
+        elif n_threads > MAX_THREADS:
+            logger.warning(f"n_threads={n_threads} exceeds maximum {MAX_THREADS}, clamping")
+            n_threads = MAX_THREADS
+        
+        # Validate n_ctx: must be positive and reasonable
+        # Most models support up to 32K, but we'll cap at 128K for safety
+        MAX_CTX = 131072  # 128K
+        if n_ctx < 1:
+            logger.warning(f"Invalid n_ctx={n_ctx}, setting to 2048")
+            n_ctx = 2048
+        elif n_ctx > MAX_CTX:
+            logger.warning(f"n_ctx={n_ctx} exceeds maximum {MAX_CTX}, clamping")
+            n_ctx = MAX_CTX
+        
+        return n_threads, n_ctx
+
+    def _test_model(self, model):
+        """
+        Perform a simple health check on the model.
+        
+        Args:
+            model: Loaded Llama model instance
+            
+        Returns:
+            True if model responds correctly, False otherwise
+        """
+        if model is None:
+            return False
+        
+        try:
+            # Simple test prompt
+            test_prompt = "Hello"
+            result = model(
+                test_prompt,
+                max_tokens=5,
+                stop=["\n"],
+                echo=False
+            )
+            
+            # Check if we got a valid response
+            if result and 'choices' in result and len(result['choices']) > 0:
+                logger.debug("Model health check passed")
+                return True
+            else:
+                logger.warning("Model health check failed: invalid response structure")
+                return False
+        except SystemError as e:
+            logger.error(f"Model health check failed with SystemError (possible crash): {e}")
+            return False
+        except RuntimeError as e:
+            logger.error(f"Model health check failed with RuntimeError: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"Model health check failed with exception: {e}")
+            return False
 
     def _auto_install_llama_cpp(self):
         """Automatically install llama-cpp-python."""
