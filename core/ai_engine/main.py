@@ -39,6 +39,15 @@ class CosmicAI:
         self.executor = Executor()
         self.ipc = IPCServer(self)
         
+        # Log initialization summary
+        logger.info("=" * 60)
+        logger.info("Cosmic AI Initialization Complete")
+        logger.info("=" * 60)
+        logger.info(f"Main Model: {'Loaded' if self.model_manager.main_model else 'Not loaded (using fallback)'}")
+        validator_count = sum(1 for v in self.model_manager.validator_models.values() if v is not None)
+        logger.info(f"Validators: {validator_count}/3 with AI models, {3-validator_count}/3 using heuristics")
+        logger.info("=" * 60)
+        
     def start(self):
         logger.info("Starting IPC Server...")
         self.ipc.start()

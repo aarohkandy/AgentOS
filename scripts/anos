@@ -1,0 +1,19 @@
+#!/bin/bash
+# ANOS - Agent OS Command
+# Always uses the latest version from the project
+
+# Find project root (this script's location)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Change to project root
+cd "$PROJECT_ROOT"
+
+# Set environment
+export DISPLAY="${DISPLAY:-:0}"
+export PYTHONPATH="$PROJECT_ROOT"
+export PYTHONUNBUFFERED=1
+
+# Run the latest main.py
+exec python3 "$PROJECT_ROOT/core/ai_engine/main.py" "$@"
+

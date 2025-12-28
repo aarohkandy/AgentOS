@@ -22,7 +22,15 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-MODEL_DIR="$PROJECT_DIR/core/ai_engine/models"
+
+# Support base directory for persistent models
+if [ -n "$MODEL_BASE_DIR" ]; then
+    MODEL_DIR="$MODEL_BASE_DIR"
+    log_info "Using base model directory: $MODEL_DIR"
+else
+    MODEL_DIR="$PROJECT_DIR/core/ai_engine/models"
+fi
+
 CONFIG_FILE="$PROJECT_DIR/config/model-urls.json"
 
 # Model URLs (GGUF format for llama.cpp)
@@ -291,6 +299,13 @@ main() {
 }
 
 # Handle command line arguments
+BASE_DIR_ARG=""
+if [ "$1" = "--base-dir" ] && [ -n "$2" ]; then
+    MODEL_DIR="$2"
+    BASE_DIR_ARG="$1 $2"
+    shift 2
+fi
+
 if [ "$1" = "--tier" ] && [ -n "$2" ]; then
     check_dependencies
     mkdir -p "$MODEL_DIR"/{tier1,tier2,tier3,validators}
