@@ -115,8 +115,11 @@ For contributors and developers:
 # Setup development environment
 ./dev-setup.sh
 
-# Create VM for testing
-# (Follow docs/DEVELOPMENT.md)
+# Quick test (starts AI daemon + sidebar without full install)
+./scripts/start-cosmic-test.sh
+
+# Or ultra-simple version
+./scripts/quick-test.sh
 
 # Run tests
 python3 scripts/test-ai.py

@@ -42,8 +42,24 @@ class AIWorker(QThread):
         self.message = message
 
     def run(self):
+        # Try DBus first (preferred for KDE integration)
+        try:
+            import dbus
+            bus = dbus.SessionBus()
+            obj = bus.get_object("com.cosmicos.ai", "/com/cosmicos/ai")
+            iface = dbus.Interface(obj, "com.cosmicos.ai")
+            response_str = iface.ProcessRequest(self.message)
+            result = json.loads(response_str)
+            self.result_ready.emit(result)
+            return
+        except (ImportError, dbus.exceptions.DBusException, AttributeError) as e:
+            # DBus not available or service not found, try socket
+            logger.debug(f"DBus connection failed: {e}, trying socket...")
+        
+        # Fallback to Unix socket
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5)  # 5 second timeout
             sock.connect(self.socket_path)
             sock.sendall(self.message.encode('utf-8'))
             
@@ -58,6 +74,10 @@ class AIWorker(QThread):
             
             result = json.loads(response.decode('utf-8'))
             self.result_ready.emit(result)
+        except FileNotFoundError:
+            self.error_occurred.emit("AI daemon not running. Start with: ./scripts/start-cosmic-test.sh")
+        except ConnectionRefusedError:
+            self.error_occurred.emit("AI daemon not responding. Check if it's running.")
         except Exception as e:
             self.error_occurred.emit(str(e))
 
@@ -539,13 +559,24 @@ class CosmicSidebar(QWidget):
         if "plan" in result and isinstance(result["plan"], list):
             # Show plan for approval
             desc = result.get("description", "Generated command plan")
+            
+            # Show fallback mode indicator
+            if result.get("fallback_mode"):
+                self.add_message("ℹ️ Using rule-based fallback (AI models not loaded)", is_user=False)
+                self.add_message("💡 Install models for full AI: ./scripts/install-models.sh", is_user=False)
+            
             self.add_message(f"📋 {desc}", is_user=False)
             
-            plan_widget = CommandPlanWidget(result)
-            plan_widget.approved.connect(self.execute_approved_plan)
-            plan_widget.denied.connect(self.handle_plan_denied)
-            self.chat_layout.addWidget(plan_widget)
-            self.current_plan = result
+            # Only show plan widget if there are actual actions
+            if result["plan"]:
+                plan_widget = CommandPlanWidget(result)
+                plan_widget.approved.connect(self.execute_approved_plan)
+                plan_widget.denied.connect(self.handle_plan_denied)
+                self.chat_layout.addWidget(plan_widget)
+                self.current_plan = result
+            else:
+                # Empty plan - just show description
+                pass
         else:
             # Regular text response
             text = result.get("description", str(result))

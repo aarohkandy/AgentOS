@@ -38,14 +38,16 @@ class IPCServer:
         self.thread = None
 
     def start(self):
+        # Start DBus if available (preferred for KDE integration)
         if DBUS_AVAILABLE:
             try:
                 self._start_dbus()
-                return
             except Exception as e:
                 logger.error(f"Failed to start DBus server: {e}")
                 logger.info("Falling back to Unix socket...")
         
+        # Always start socket as fallback (for compatibility)
+        # This ensures both DBus and socket work simultaneously
         self._start_socket()
 
     def _start_dbus(self):

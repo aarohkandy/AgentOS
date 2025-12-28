@@ -1,0 +1,5 @@
+#!/bin/bash
+# Simple wrapper for complete installation
+cd "$(dirname "$0")/.."
+./scripts/install-all.sh "$@"
+
