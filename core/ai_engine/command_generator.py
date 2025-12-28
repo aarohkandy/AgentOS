@@ -4,12 +4,14 @@ import requests
 import subprocess
 import sys
 import re
+import threading
 
 logger = logging.getLogger(__name__)
 
 class CommandGenerator:
     def __init__(self, model):
         self.model = model
+        self._model_lock = threading.Lock()  # Thread safety for model access
         self.system_prompt = """You are Cosmic AI, an intelligent assistant that controls a Linux computer GUI through natural language.
 
 When the user wants to perform actions, output a JSON plan with these available actions:
@@ -97,28 +99,83 @@ Always respond intelligently and naturally. Be helpful and conversational."""
             return self._generate_with_api_fallback(user_message)
 
     def _generate_with_model(self, user_message):
-        """Generate response using local AI model."""
+        """Generate response using local AI model with error handling and thread safety."""
+        if not self.model:
+            return self._generate_with_api_fallback(user_message)
+        
         prompt = f"{self.system_prompt}\n\nUser Request: {user_message}\nJSON Plan:"
         
-        try:
-            output = self.model(
-                prompt,
-                max_tokens=512,
-                stop=["User Request:", "JSON Plan:"],
-                echo=False
-            )
-            text = output['choices'][0]['text'].strip()
-            
-            # Use robust JSON extraction
-            result = self._extract_json(text)
-            if result:
-                return result
-            else:
-                # Fallback to conversational response
-                return {"description": text, "fallback_mode": True}
-        except Exception as e:
-            logger.error(f"Error generating with model: {e}")
-            return self._generate_with_api_fallback(user_message)
+        # Thread-safe model access to prevent concurrent calls
+        with self._model_lock:
+            try:
+                # Log memory usage before generation
+                import psutil
+                process = psutil.Process()
+                mem_before = process.memory_info().rss / (1024 ** 3)  # GB
+                logger.info(f"Starting generation for: '{user_message[:50]}...' (Memory before: {mem_before:.2f} GB)")
+                
+                # Validate prompt length (some models have limits)
+                if len(prompt) > 100000:  # 100K characters
+                    logger.warning(f"Prompt too long ({len(prompt)} chars), truncating")
+                    prompt = prompt[:100000]
+                
+                logger.debug(f"Calling model with prompt length: {len(prompt)} chars, max_tokens: 512")
+                
+                output = self.model(
+                    prompt,
+                    max_tokens=512,
+                    stop=["User Request:", "JSON Plan:"],
+                    echo=False
+                )
+                
+                # Log memory usage after generation
+                mem_after = process.memory_info().rss / (1024 ** 3)  # GB
+                mem_delta = mem_after - mem_before
+                logger.info(f"Generation complete (Memory after: {mem_after:.2f} GB, delta: {mem_delta:+.2f} GB)")
+                
+                if not output or 'choices' not in output or len(output['choices']) == 0:
+                    logger.error("Model returned invalid output structure")
+                    return self._generate_with_api_fallback(user_message)
+                
+                text = output['choices'][0]['text'].strip()
+                
+                # Use robust JSON extraction
+                result = self._extract_json(text)
+                if result:
+                    return result
+                else:
+                    # Fallback to conversational response
+                    return {"description": text, "fallback_mode": True}
+                    
+            except SystemError as e:
+                # GGML crashes often manifest as SystemError
+                logger.error(f"Model crashed with SystemError (GGML assertion?): {e}")
+                logger.warning("Model may be corrupted or incompatible. Falling back to API.")
+                # Mark model as potentially broken
+                self.model = None
+                return self._generate_with_api_fallback(user_message)
+                
+            except RuntimeError as e:
+                # Runtime errors from llama-cpp-python
+                error_str = str(e).lower()
+                if "assert" in error_str or "ggml" in error_str:
+                    logger.error(f"Model crashed with RuntimeError (possible GGML issue): {e}")
+                    logger.warning("Model may be corrupted or incompatible. Falling back to API.")
+                    self.model = None
+                    return self._generate_with_api_fallback(user_message)
+                else:
+                    logger.error(f"Model RuntimeError: {e}")
+                    return self._generate_with_api_fallback(user_message)
+                    
+            except ValueError as e:
+                # Invalid parameters or model state
+                logger.error(f"Model ValueError (invalid parameters?): {e}")
+                return self._generate_with_api_fallback(user_message)
+                
+            except Exception as e:
+                # Catch-all for other exceptions
+                logger.error(f"Unexpected error generating with model: {type(e).__name__}: {e}")
+                return self._generate_with_api_fallback(user_message)
 
     def _generate_with_api_fallback(self, user_message):
         """Use alternative AI sources when local models aren't available."""

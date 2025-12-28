@@ -35,3 +35,9 @@ Thumbs.db
 *.tmp
 *.bak
 *~
+
+# AI Models (too large for GitHub - use install-models.sh to download)
+models/tier*/model.gguf
+models/tier*/*.gguf
+models/validators/*.gguf
+*.gguf
