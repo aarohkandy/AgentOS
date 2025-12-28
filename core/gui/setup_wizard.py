@@ -78,3 +78,4 @@ if __name__ == '__main__':
     wizard = SetupWizard()
     wizard.show()
     sys.exit(app.exec())
+

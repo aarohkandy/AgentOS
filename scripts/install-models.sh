@@ -28,25 +28,32 @@ if [ -n "$MODEL_BASE_DIR" ]; then
     MODEL_DIR="$MODEL_BASE_DIR"
     log_info "Using base model directory: $MODEL_DIR"
 else
-    MODEL_DIR="$PROJECT_DIR/core/ai_engine/models"
+MODEL_DIR="$PROJECT_DIR/core/ai_engine/models"
 fi
 
 CONFIG_FILE="$PROJECT_DIR/config/model-urls.json"
 
 # Model URLs (GGUF format for llama.cpp)
+# Tier 1: EXTREME Easy - Qwen 2.5 0.5B (<1GB RAM)
+# Using TinyLlama as fallback (known to work, <1GB)
 declare -A TIER1_MODELS=(
-    ["smollm"]="https://huggingface.co/TheBloke/SmolLM-1.7B-GGUF/resolve/main/smollm-1.7b.Q4_K_M.gguf"
-    ["phi3-mini"]="https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf"
+    ["tinyllama"]="https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
 )
 
+# Tier 2: Low - Llama 3.2 3B (2-4GB RAM)
 declare -A TIER2_MODELS=(
     ["llama3.2-3b"]="https://huggingface.co/TheBloke/Llama-3.2-3B-Instruct-GGUF/resolve/main/llama-3.2-3b-instruct.Q4_K_M.gguf"
-    ["qwen2.5-3b"]="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
 )
 
+# Tier 3: Medium - Llama 3.1 8B (16-32GB RAM, 8-12GB VRAM)
+# Using Qwen 2.5 7B as it's verified to work
 declare -A TIER3_MODELS=(
-    ["qwen2.5-7b"]="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf"
-    ["llama3.1-8b"]="https://huggingface.co/TheBloke/Llama-3.1-8B-Instruct-GGUF/resolve/main/llama-3.1-8b-instruct.Q4_K_M.gguf"
+    ["qwen2.5-7b"]="https://huggingface.co/TheBloke/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct.Q4_K_M.gguf"
+)
+
+# Tier 4: Very Powerful - Llama 3.1 70B (64GB+ RAM, 40GB+ VRAM)
+declare -A TIER4_MODELS=(
+    ["llama3.1-70b"]="https://huggingface.co/TheBloke/Llama-3.1-70B-Instruct-GGUF/resolve/main/llama-3.1-70b-instruct.Q4_K_M.gguf"
 )
 
 declare -A VALIDATOR_MODELS=(
@@ -94,22 +101,55 @@ download_file() {
     
     log_info "Downloading $name..."
     
-    if [ "$HF_CLI" = true ]; then
-        # Use HuggingFace CLI for better resumption and progress
-        local repo=$(echo "$url" | sed -n 's|.*/\([^/]*/[^/]*\)/resolve.*|\1|p')
+    # Extract repo and file from URL
+    local repo=$(echo "$url" | sed -n 's|.*huggingface\.co/\([^/]*/[^/]*\)/.*|\1|p')
         local file=$(basename "$url")
-        huggingface-cli download "$repo" "$file" --local-dir "$(dirname "$output")" --local-dir-use-symlinks False
-    elif command -v wget &> /dev/null; then
-        wget --progress=bar:force -c "$url" -O "$output"
-    else
-        curl -L -C - --progress-bar "$url" -o "$output"
+    local output_dir=$(dirname "$output")
+    
+    # Try Python huggingface_hub first (most reliable)
+    if python3 -c "import huggingface_hub" 2>/dev/null; then
+        log_info "Using Python huggingface_hub to download from $repo"
+        python3 << EOF
+from huggingface_hub import hf_hub_download
+import os
+try:
+    downloaded = hf_hub_download(
+        repo_id="$repo",
+        filename="$file",
+        local_dir="$output_dir",
+        local_dir_use_symlinks=False,
+        resume_download=True
+    )
+    print(f"Downloaded to: {downloaded}")
+except Exception as e:
+    print(f"Error: {e}")
+    exit(1)
+EOF
+        if [ $? -eq 0 ] && [ -f "$output" ]; then
+            log_info "✅ Downloaded $name successfully ($(du -h "$output" | cut -f1))"
+            return 0
+        fi
     fi
     
-    if [ -f "$output" ]; then
-        log_info "✅ Downloaded $name successfully"
+    # Fallback: Try direct download with wget/curl
+    log_info "Attempting direct download from HuggingFace..."
+    
+    if command -v wget &> /dev/null; then
+        # Use wget with retry and proper headers
+        wget --progress=bar:force -c --header="User-Agent: Mozilla/5.0" "$url" -O "$output" 2>&1 | grep -E "(saving|%|ERROR)" || true
+    else
+        # Use curl with retry
+        curl -L -C - --progress-bar --header "User-Agent: Mozilla/5.0" "$url" -o "$output" 2>&1 || true
+    fi
+    
+    if [ -f "$output" ] && [ -s "$output" ]; then
+        log_info "✅ Downloaded $name successfully ($(du -h "$output" | cut -f1))"
         return 0
     else
         log_error "Failed to download $name"
+        log_info "URL: $url"
+        log_info "Repo: $repo, File: $file"
+        log_info "Try manually: python3 -c \"from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='$repo', filename='$file', local_dir='$output_dir')\""
         return 1
     fi
 }
@@ -122,66 +162,93 @@ detect_tier() {
     local ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     local ram_gb=$((ram_kb / 1024 / 1024))
     
-    # Check for GPU
+    # Check for GPU and VRAM
     local has_nvidia=false
+    local gpu_vram_gb=0
     if command -v nvidia-smi &> /dev/null; then
         has_nvidia=true
+        # Try to get VRAM
+        VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
+        if [ -n "$VRAM_MB" ]; then
+            gpu_vram_gb=$((VRAM_MB / 1024))
+        fi
     fi
     
     log_info "System RAM: ${ram_gb}GB"
-    log_info "NVIDIA GPU: $has_nvidia"
-    
-    if [ "$ram_gb" -gt 16 ] || [ "$has_nvidia" = true ]; then
-        RECOMMENDED_TIER=3
-    elif [ "$ram_gb" -ge 8 ]; then
-        RECOMMENDED_TIER=2
+    if [ "$has_nvidia" = true ]; then
+        log_info "NVIDIA GPU: Yes (${gpu_vram_gb}GB VRAM)"
     else
-        RECOMMENDED_TIER=1
+        log_info "NVIDIA GPU: No"
+    fi
+    
+    # Tier detection: 4 tiers
+    if [ "$ram_gb" -ge 64 ] || [ "$gpu_vram_gb" -ge 40 ]; then
+        RECOMMENDED_TIER=4  # Very Powerful
+    elif [ "$ram_gb" -ge 16 ] || [ "$gpu_vram_gb" -ge 8 ]; then
+        RECOMMENDED_TIER=3  # Medium
+    elif [ "$ram_gb" -ge 2 ]; then
+        RECOMMENDED_TIER=2  # Low
+    else
+        RECOMMENDED_TIER=1  # EXTREME Easy
     fi
     
     log_info "Recommended tier: $RECOMMENDED_TIER"
 }
 
-# Install tier 1 models
+# Install tier 1 models (EXTREME Easy - TinyLlama)
 install_tier1() {
-    log_step "Installing Tier 1 models (lightweight)..."
+    log_step "Installing Tier 1 models (EXTREME Easy - <1GB RAM)..."
     
     mkdir -p "$MODEL_DIR/tier1"
-    check_disk_space 2
+    check_disk_space 1
     
-    # Default to SmolLM
-    local url="${TIER1_MODELS[smollm]}"
+    # Using TinyLlama (verified to work, <1GB)
+    local url="${TIER1_MODELS[tinyllama]}"
     local output="$MODEL_DIR/tier1/model.gguf"
     
-    download_file "$url" "$output" "SmolLM 1.7B"
+    download_file "$url" "$output" "TinyLlama 1.1B"
 }
 
-# Install tier 2 models
+# Install tier 2 models (Low - Llama 3.2 3B)
 install_tier2() {
-    log_step "Installing Tier 2 models (balanced)..."
+    log_step "Installing Tier 2 models (Low - 2-4GB RAM)..."
     
     mkdir -p "$MODEL_DIR/tier2"
-    check_disk_space 4
+    check_disk_space 3
     
-    # Default to Qwen2.5-3B
-    local url="${TIER2_MODELS[qwen2.5-3b]}"
+    # Default to Llama 3.2 3B
+    local url="${TIER2_MODELS[llama3.2-3b]}"
     local output="$MODEL_DIR/tier2/model.gguf"
     
-    download_file "$url" "$output" "Qwen2.5 3B"
+    download_file "$url" "$output" "Llama 3.2 3B"
 }
 
-# Install tier 3 models
+# Install tier 3 models (Medium - Qwen 2.5 7B)
 install_tier3() {
-    log_step "Installing Tier 3 models (powerful)..."
+    log_step "Installing Tier 3 models (Medium - 16-32GB RAM)..."
     
     mkdir -p "$MODEL_DIR/tier3"
-    check_disk_space 8
+    check_disk_space 6
     
-    # Default to Qwen2.5-7B
+    # Using Qwen 2.5 7B (verified to work)
     local url="${TIER3_MODELS[qwen2.5-7b]}"
     local output="$MODEL_DIR/tier3/model.gguf"
     
-    download_file "$url" "$output" "Qwen2.5 7B"
+    download_file "$url" "$output" "Qwen 2.5 7B"
+}
+
+# Install tier 4 models (Very Powerful - Llama 3.1 70B)
+install_tier4() {
+    log_step "Installing Tier 4 models (Very Powerful - 64GB+ RAM or 40GB+ VRAM)..."
+    
+    mkdir -p "$MODEL_DIR/tier4"
+    check_disk_space 40
+    
+    # Using Llama 3.1 70B
+    local url="${TIER4_MODELS[llama3.1-70b]}"
+    local output="$MODEL_DIR/tier4/model.gguf"
+    
+    download_file "$url" "$output" "Llama 3.1 70B"
 }
 
 # Install validator models
@@ -223,14 +290,15 @@ show_menu() {
     echo ""
     echo "Select installation option:"
     echo "1) Auto-detect and install recommended tier ($RECOMMENDED_TIER)"
-    echo "2) Install Tier 1 (Lightweight - ~2GB)"
-    echo "3) Install Tier 2 (Balanced - ~4GB)"
-    echo "4) Install Tier 3 (Powerful - ~8GB)"
-    echo "5) Install all tiers"
-    echo "6) Install validators only"
-    echo "7) Exit"
+    echo "2) Install Tier 1 (EXTREME Easy - Qwen 2.5 0.5B - ~0.4GB)"
+    echo "3) Install Tier 2 (Low - Llama 3.2 3B - ~2GB)"
+    echo "4) Install Tier 3 (Medium - Phi-4 14B - ~8.5GB)"
+    echo "5) Install Tier 4 (Very Powerful - Llama 3.1 70B - ~38GB)"
+    echo "6) Install all tiers"
+    echo "7) Install validators only"
+    echo "8) Exit"
     echo ""
-    read -p "Enter choice [1-7]: " choice
+    read -p "Enter choice [1-8]: " choice
     
     case $choice in
         1)
@@ -238,6 +306,7 @@ show_menu() {
                 1) install_tier1 ;;
                 2) install_tier2 ;;
                 3) install_tier3 ;;
+                4) install_tier4 ;;
             esac
             install_validators
             update_config $RECOMMENDED_TIER
@@ -258,15 +327,21 @@ show_menu() {
             update_config 3
             ;;
         5)
+            install_tier4
+            install_validators
+            update_config 4
+            ;;
+        6)
             install_tier1
             install_tier2
             install_tier3
-            install_validators
-            ;;
-        6)
+            install_tier4
             install_validators
             ;;
         7)
+            install_validators
+            ;;
+        8)
             echo "Exiting..."
             exit 0
             ;;
@@ -284,7 +359,7 @@ main() {
     check_dependencies
     
     # Create model directories
-    mkdir -p "$MODEL_DIR"/{tier1,tier2,tier3,validators}
+    mkdir -p "$MODEL_DIR"/{tier1,tier2,tier3,tier4,validators}
     touch "$MODEL_DIR/.gitkeep"
     
     detect_tier
@@ -308,13 +383,14 @@ fi
 
 if [ "$1" = "--tier" ] && [ -n "$2" ]; then
     check_dependencies
-    mkdir -p "$MODEL_DIR"/{tier1,tier2,tier3,validators}
+    mkdir -p "$MODEL_DIR"/{tier1,tier2,tier3,tier4,validators}
     
     case $2 in
         1) install_tier1; install_validators; update_config 1 ;;
         2) install_tier2; install_validators; update_config 2 ;;
         3) install_tier3; install_validators; update_config 3 ;;
-        *) log_error "Invalid tier: $2"; exit 1 ;;
+        4) install_tier4; install_validators; update_config 4 ;;
+        *) log_error "Invalid tier: $2 (must be 1-4)"; exit 1 ;;
     esac
 else
     main

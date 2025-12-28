@@ -3,10 +3,19 @@
 # Always uses the latest version from the project
 
 # Find project root (this script's location)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if [ -L "$SCRIPT_PATH" ]; then
+    SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Change to project root
+# Verify project root exists
+if [ ! -f "$PROJECT_ROOT/core/ai_engine/main.py" ]; then
+    echo "Error: Cannot find project root. Expected: $PROJECT_ROOT" >&2
+    exit 1
+fi
+
 cd "$PROJECT_ROOT"
 
 # Set environment
@@ -14,6 +23,662 @@ export DISPLAY="${DISPLAY:-:0}"
 export PYTHONPATH="$PROJECT_ROOT"
 export PYTHONUNBUFFERED=1
 
-# Run the latest main.py
-exec python3 "$PROJECT_ROOT/core/ai_engine/main.py" "$@"
+# PID files
+DAEMON_PIDFILE="/tmp/anos-daemon.pid"
+SIDEBAR_PIDFILE="/tmp/anos-sidebar.pid"
+LOG_FILE="$PROJECT_ROOT/cosmic-ai.log"
+
+# Virtual environment paths
+VENV_DIR="$PROJECT_ROOT/venv"
+VENV_PYTHON="$VENV_DIR/bin/python3"
+VENV_PIP="$VENV_DIR/bin/pip"
+
+# Functions
+setup_venv() {
+    # Check if venv exists
+    if [ -d "$VENV_DIR" ] && [ -f "$VENV_PYTHON" ]; then
+        # Venv exists, verify it's working
+        if "$VENV_PYTHON" --version >/dev/null 2>&1; then
+            return 0  # Venv is good
+        else
+            echo "⚠️  Existing venv appears corrupted, recreating..."
+            rm -rf "$VENV_DIR"
+        fi
+    fi
+    
+    # Create venv if it doesn't exist
+    if [ ! -d "$VENV_DIR" ]; then
+        echo "📦 Creating virtual environment in shared folder..."
+        echo "   (This is a one-time setup - venv will persist across VM sessions)"
+        python3 -m venv "$VENV_DIR" || {
+            echo "✗ Failed to create virtual environment"
+            return 1
+        }
+        echo "✓ Virtual environment created"
+    fi
+    
+    # Upgrade pip in venv
+    "$VENV_PIP" install --upgrade pip --quiet >/dev/null 2>&1
+    
+    # Install requirements.txt if it exists (but don't fail if it doesn't)
+    if [ -f "$PROJECT_ROOT/requirements.txt" ]; then
+        echo "   Installing Python dependencies from requirements.txt..."
+        "$VENV_PIP" install -q -r "$PROJECT_ROOT/requirements.txt" 2>&1 | grep -v "already satisfied" || true
+        echo "✓ Dependencies installed"
+    fi
+    
+    return 0
+}
+
+# Get Python command (uses venv if available, falls back to system)
+get_python() {
+    if [ -f "$VENV_PYTHON" ]; then
+        echo "$VENV_PYTHON"
+    else
+        echo "python3"
+    fi
+}
+
+# Get pip command (uses venv if available, falls back to system)
+get_pip() {
+    if [ -f "$VENV_PIP" ]; then
+        echo "$VENV_PIP"
+    else
+        echo "pip3"
+    fi
+}
+
+show_help() {
+    echo "ANOS - Agent OS Command"
+    echo ""
+    echo "Usage: anos [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  (no args)    Start AI daemon and sidebar"
+    echo "  --stop       Stop all ANOS processes"
+    echo "  --status     Show running processes"
+    echo "  --debug      Enable verbose logging"
+    echo "  --daemon     Start only the AI daemon"
+    echo "  --sidebar    Start only the sidebar GUI"
+    echo "  --setup      Auto-setup (install llama-cpp-python and download models)"
+    echo "  --help       Show this help"
+    echo ""
+}
+
+# Auto-setup: Check and install llama-cpp-python
+check_llama_cpp() {
+    # Setup venv first
+    if ! setup_venv; then
+        echo "   ✗ Failed to setup virtual environment"
+        return 1
+    fi
+    
+    # Check if llama-cpp-python is available in venv
+    PYTHON_CMD=$(get_python)
+    if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+        echo "   ✓ llama-cpp-python already installed in venv"
+        return 0  # Already installed
+    fi
+    
+    # Install build dependencies
+    echo "   Installing build dependencies..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -qq >/dev/null 2>&1
+        sudo apt-get install -y cmake build-essential python3-dev >/dev/null 2>&1
+        echo "   ✓ Build dependencies installed"
+    fi
+    
+    # Install llama-cpp-python to venv (show ALL output)
+    echo "   Compiling llama-cpp-python in venv (this takes 5-10 minutes)..."
+    echo "   [This will be saved in the shared folder and persist across VM sessions]"
+    echo "   [You'll see compilation progress below]"
+    echo ""
+    
+    PIP_CMD=$(get_pip)
+    PYTHON_CMD=$(get_python)
+    INSTALLED=0
+    
+    # Method 1: Install to venv
+    echo "   Installing to virtual environment: $VENV_DIR"
+    echo "   (This will take 5-10 minutes - compilation in progress...)"
+    if "$PIP_CMD" install llama-cpp-python 2>&1; then
+        sleep 1  # Brief pause for Python to recognize new module
+        if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+            echo ""
+            echo "   ✓ llama-cpp-python installed successfully in venv!"
+            INSTALLED=1
+        else
+            echo "   ⚠ Installation finished but import test failed - may need a moment"
+            sleep 2
+            if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+                echo "   ✓ Now working!"
+                INSTALLED=1
+            fi
+        fi
+    else
+        echo "   ✗ Installation command failed"
+    fi
+    
+    # Method 2: Fallback to user install if venv fails
+    if [ "$INSTALLED" -eq 0 ]; then
+        echo ""
+        echo "   ⚠ Venv installation failed, trying user install as fallback..."
+        echo "   Trying: pip3 install --user llama-cpp-python"
+        echo "   (This will take 5-10 minutes - compilation in progress...)"
+        if pip3 install --user llama-cpp-python 2>&1; then
+            sleep 1
+            if python3 -c "from llama_cpp import Llama" 2>/dev/null; then
+                echo ""
+                echo "   ✓ llama-cpp-python installed to user site-packages (fallback)"
+                INSTALLED=1
+            else
+                echo "   ⚠ Installation finished but import test failed - may need a moment"
+            fi
+        else
+            echo "   ✗ Installation command failed"
+        fi
+    fi
+    
+    if [ "$INSTALLED" -eq 0 ]; then
+        echo ""
+        echo "   ✗ Installation failed. Check output above for errors."
+        echo "   Try manually: $PIP_CMD install llama-cpp-python"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Detect hardware tier
+detect_tier() {
+    RAM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
+    RAM_GB=$((RAM_KB / 1024 / 1024))
+    
+    GPU_VRAM_GB=0
+    if command -v nvidia-smi &> /dev/null; then
+        VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
+        if [ -n "$VRAM_MB" ]; then
+            GPU_VRAM_GB=$((VRAM_MB / 1024))
+        fi
+    fi
+    
+    # Tier detection (matches model_manager.py)
+    if [ "$RAM_GB" -ge 64 ] || [ "$GPU_VRAM_GB" -ge 40 ]; then
+        echo 4  # Very Powerful
+    elif [ "$RAM_GB" -ge 16 ] || [ "$GPU_VRAM_GB" -ge 8 ]; then
+        echo 3  # Medium
+    elif [ "$RAM_GB" -ge 2 ]; then
+        echo 2  # Low
+    else
+        echo 1  # EXTREME Easy
+    fi
+}
+
+# Check for model and download if missing
+check_and_download_model() {
+    local tier=$1
+    local model_dir="$PROJECT_ROOT/models/tier$tier"
+    local model_file="$model_dir/model.gguf"
+    
+    # Model URLs (matches install-models.sh)
+    declare -A TIER_URLS=(
+        ["1"]="https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+        ["2"]="https://huggingface.co/TheBloke/Llama-3.2-3B-Instruct-GGUF/resolve/main/llama-3.2-3b-instruct.Q4_K_M.gguf"
+        ["3"]="https://huggingface.co/TheBloke/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct.Q4_K_M.gguf"
+        ["4"]="https://huggingface.co/TheBloke/Llama-3.1-70B-Instruct-GGUF/resolve/main/llama-3.1-70b-instruct.Q4_K_M.gguf"
+    )
+    
+    # Check if model exists
+    if [ -f "$model_file" ]; then
+        echo "   ✓ Model already downloaded ($(du -h "$model_file" | cut -f1))"
+        return 0  # Model exists
+    fi
+    
+    echo "   Downloading Tier $tier model..."
+    echo "   [This may take several minutes depending on your connection]"
+    echo ""
+    
+    # Create directory
+    mkdir -p "$model_dir"
+    
+    local url="${TIER_URLS[$tier]}"
+    if [ -z "$url" ]; then
+        echo "   ✗ No URL configured for Tier $tier"
+        return 1
+    fi
+    
+    # Extract repo and filename from URL
+    local repo=$(echo "$url" | sed -n 's|.*huggingface\.co/\([^/]*/[^/]*\)/.*|\1|p')
+    local filename=$(basename "$url")
+    
+    echo "   Repository: $repo"
+    echo "   File: $filename"
+    echo ""
+    
+    # Try Python huggingface_hub first
+    PYTHON_CMD=$(get_python)
+    if "$PYTHON_CMD" -c "import huggingface_hub" 2>/dev/null; then
+        echo "   Using HuggingFace Hub (Python)..."
+        "$PYTHON_CMD" << EOF
+from huggingface_hub import hf_hub_download
+import os
+import shutil
+import sys
+
+try:
+    print("   Connecting to HuggingFace...")
+    downloaded = hf_hub_download(
+        repo_id="$repo",
+        filename="$filename",
+        local_dir="$model_dir",
+        local_dir_use_symlinks=False,
+        resume_download=True
+    )
+    # Ensure it's named model.gguf
+    target = "$model_file"
+    if downloaded != target:
+        print(f"   Moving {downloaded} to {target}...")
+        shutil.move(downloaded, target)
+    print(f"   ✓ Downloaded to: {target}")
+    sys.exit(0)
+except Exception as e:
+    print(f"   ✗ Error: {e}")
+    sys.exit(1)
+EOF
+        if [ $? -eq 0 ] && [ -f "$model_file" ]; then
+            echo "   ✓ Model downloaded! ($(du -h "$model_file" | cut -f1))"
+            return 0
+        else
+            echo "   HuggingFace Hub download failed, trying direct download..."
+            echo ""
+        fi
+    fi
+    
+    # Fallback: Direct download (show progress)
+    echo "   Using direct download..."
+    if command -v wget &> /dev/null; then
+        wget --progress=bar:force -c "$url" -O "$model_file" 2>&1
+    elif command -v curl &> /dev/null; then
+        curl -L -C - --progress-bar "$url" -o "$model_file"
+        echo ""
+    else
+        echo "   ✗ Need wget or curl to download"
+        return 1
+    fi
+    
+    # Check if download succeeded (file might have different name)
+    if [ -f "$model_file" ] && [ -s "$model_file" ]; then
+        echo "   ✓ Model downloaded! ($(du -h "$model_file" | cut -f1))"
+        return 0
+    elif [ -f "$model_dir/$filename" ] && [ -s "$model_dir/$filename" ]; then
+        # Rename to model.gguf
+        echo "   Renaming to model.gguf..."
+        mv "$model_dir/$filename" "$model_file"
+        echo "   ✓ Model downloaded! ($(du -h "$model_file" | cut -f1))"
+        return 0
+    else
+        echo "   ✗ Download failed. Check connection and try again."
+        return 1
+    fi
+}
+
+# Auto-setup: Check everything and install if needed
+auto_setup() {
+    echo "🔧 ANOS Auto-Setup"
+    echo "=================="
+    echo ""
+    
+    # Check llama-cpp-python
+    if ! check_llama_cpp; then
+        echo ""
+        echo "⚠️  Setup incomplete. AI will use fallback mode."
+        echo "   Run 'anos --setup' to retry installation."
+        return 1
+    fi
+    
+    echo ""
+    
+    # Detect tier and check for model
+    TIER=$(detect_tier)
+    echo "📊 Detected hardware: Tier $TIER"
+    echo ""
+    
+    if ! check_and_download_model "$TIER"; then
+        echo ""
+        echo "⚠️  Model download incomplete. AI will use fallback mode."
+        echo "   Run 'anos --setup' to retry download."
+        return 1
+    fi
+    
+    echo ""
+    echo "✅ Setup complete! Ready to use AI models."
+    echo ""
+    return 0
+}
+
+stop_all() {
+    echo "Stopping ANOS..."
+    
+    # Kill daemon
+    if [ -f "$DAEMON_PIDFILE" ]; then
+        DAEMON_PID=$(cat "$DAEMON_PIDFILE")
+        if kill -0 "$DAEMON_PID" 2>/dev/null; then
+            kill "$DAEMON_PID" 2>/dev/null
+            echo "  Stopped daemon (PID: $DAEMON_PID)"
+        fi
+        rm -f "$DAEMON_PIDFILE"
+    fi
+    
+    # Kill sidebar
+    if [ -f "$SIDEBAR_PIDFILE" ]; then
+        SIDEBAR_PID=$(cat "$SIDEBAR_PIDFILE")
+        if kill -0 "$SIDEBAR_PID" 2>/dev/null; then
+            kill "$SIDEBAR_PID" 2>/dev/null
+            echo "  Stopped sidebar (PID: $SIDEBAR_PID)"
+        fi
+        rm -f "$SIDEBAR_PIDFILE"
+    fi
+    
+    # Kill any remaining processes (match both venv and system python)
+    pkill -f "python.*core/ai_engine/main.py" 2>/dev/null && echo "  Killed remaining daemon processes"
+    pkill -f "python.*core/gui/sidebar.py" 2>/dev/null && echo "  Killed remaining sidebar processes"
+    
+    # Clean up socket
+    rm -f /tmp/cosmic-ai.sock
+    
+    echo "✓ ANOS stopped"
+}
+
+show_status() {
+    echo "ANOS Status:"
+    echo ""
+    
+    # Check daemon
+    if [ -f "$DAEMON_PIDFILE" ]; then
+        DAEMON_PID=$(cat "$DAEMON_PIDFILE")
+        if kill -0 "$DAEMON_PID" 2>/dev/null; then
+            echo "  Daemon:  RUNNING (PID: $DAEMON_PID)"
+        else
+            echo "  Daemon:  STOPPED (stale PID file)"
+            rm -f "$DAEMON_PIDFILE"
+        fi
+    else
+        if pgrep -f "python.*core/ai_engine/main.py" > /dev/null; then
+            echo "  Daemon:  RUNNING (no PID file)"
+        else
+            echo "  Daemon:  STOPPED"
+        fi
+    fi
+    
+    # Check sidebar
+    if [ -f "$SIDEBAR_PIDFILE" ]; then
+        SIDEBAR_PID=$(cat "$SIDEBAR_PIDFILE")
+        if kill -0 "$SIDEBAR_PID" 2>/dev/null; then
+            echo "  Sidebar: RUNNING (PID: $SIDEBAR_PID)"
+        else
+            echo "  Sidebar: STOPPED (stale PID file)"
+            rm -f "$SIDEBAR_PIDFILE"
+        fi
+    else
+        if pgrep -f "python.*core/gui/sidebar.py" > /dev/null; then
+            echo "  Sidebar: RUNNING (no PID file)"
+        else
+            echo "  Sidebar: STOPPED"
+        fi
+    fi
+    
+    # Check venv status
+    if [ -d "$VENV_DIR" ] && [ -f "$VENV_PYTHON" ]; then
+        if "$VENV_PYTHON" -c "from llama_cpp import Llama" 2>/dev/null; then
+            echo "  Venv:    ACTIVE (llama-cpp-python available)"
+        else
+            echo "  Venv:    ACTIVE (llama-cpp-python not installed)"
+        fi
+    else
+        echo "  Venv:    NOT CREATED"
+    fi
+    
+    # Check socket
+    if [ -S "/tmp/cosmic-ai.sock" ]; then
+        echo "  Socket:  ACTIVE (/tmp/cosmic-ai.sock)"
+    else
+        echo "  Socket:  INACTIVE"
+    fi
+    
+    echo ""
+}
+
+start_daemon() {
+    DEBUG_FLAG="$1"
+    SKIP_SETUP="${2:-false}"
+    
+    # Setup venv if not already done
+    setup_venv >/dev/null 2>&1
+    
+    # Auto-setup check (unless skipped)
+    if [ "$SKIP_SETUP" != "true" ]; then
+        # Quick check: if llama-cpp-python missing, offer to install
+        PYTHON_CMD=$(get_python)
+        if ! "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+            echo "⚠️  llama-cpp-python not installed. AI will use fallback mode."
+            echo "   Run 'anos --setup' to install dependencies and download models."
+            echo ""
+        fi
+    fi
+    
+    # Clear log on startup
+    > "$LOG_FILE"
+    
+    echo "Starting AI daemon..."
+    
+    # Kill existing daemon
+    if [ -f "$DAEMON_PIDFILE" ]; then
+        OLD_PID=$(cat "$DAEMON_PIDFILE")
+        kill "$OLD_PID" 2>/dev/null
+    fi
+    pkill -f "python.*core/ai_engine/main.py" 2>/dev/null
+    
+    # Start daemon (output goes to both terminal and log file)
+    # Use unbuffered output so logs appear immediately
+    PYTHON_CMD=$(get_python)
+    if [ "$DEBUG_FLAG" = "--debug" ]; then
+        "$PYTHON_CMD" -u "$PROJECT_ROOT/core/ai_engine/main.py" 2>&1 | tee "$LOG_FILE" &
+    else
+        "$PYTHON_CMD" -u "$PROJECT_ROOT/core/ai_engine/main.py" 2>&1 | tee -a "$LOG_FILE" &
+    fi
+    
+    DAEMON_PID=$!
+    echo "$DAEMON_PID" > "$DAEMON_PIDFILE"
+    
+    # Wait for socket
+    sleep 1
+    if [ -S "/tmp/cosmic-ai.sock" ]; then
+        echo "  ✓ Daemon started (PID: $DAEMON_PID, logs: $LOG_FILE)"
+    else
+        echo "  ⚠ Daemon started but socket not ready yet (PID: $DAEMON_PID, logs: $LOG_FILE)"
+    fi
+}
+
+start_sidebar() {
+    echo "Starting sidebar GUI..."
+    
+    # Kill existing sidebar
+    if [ -f "$SIDEBAR_PIDFILE" ]; then
+        OLD_PID=$(cat "$SIDEBAR_PIDFILE")
+        kill "$OLD_PID" 2>/dev/null
+    fi
+    pkill -f "python.*core/gui/sidebar.py" 2>/dev/null
+    
+    # Check if PyQt6 is available
+    PYTHON_CMD=$(get_python)
+    if ! "$PYTHON_CMD" -c "import PyQt6" 2>/dev/null; then
+        echo "  ⚠ PyQt6 not installed. Sidebar cannot start."
+        echo "  Install with: sudo apt install python3-pyqt6"
+        return 1
+    fi
+    
+    # Start sidebar (foreground - this will block)
+    "$PYTHON_CMD" "$PROJECT_ROOT/core/gui/sidebar.py" &
+    SIDEBAR_PID=$!
+    echo "$SIDEBAR_PID" > "$SIDEBAR_PIDFILE"
+    echo "  ✓ Sidebar started (PID: $SIDEBAR_PID)"
+    
+    # Return the PID so we can wait on it
+    return 0
+}
+
+# Parse arguments
+case "${1:-}" in
+    --stop)
+        stop_all
+        exit 0
+        ;;
+    --status)
+        show_status
+        exit 0
+        ;;
+    --setup)
+        auto_setup
+        exit $?
+        ;;
+    --help|-h)
+        show_help
+        exit 0
+        ;;
+    --daemon)
+        start_daemon "${2:-}" "true"
+        exit 0
+        ;;
+    --sidebar)
+        start_sidebar
+        exit 0
+        ;;
+    --debug)
+        start_daemon "--debug" "true"
+        sleep 2
+        start_sidebar
+        echo ""
+        echo "ANOS started in debug mode. Logs: $LOG_FILE"
+        echo "Press Ctrl+C to stop (will kill both processes)"
+        # Wait for sidebar (foreground process)
+        wait
+        # Cleanup on exit
+        stop_all
+        ;;
+    "")
+        # Default: auto-setup then start both
+        # Use unbuffered output to ensure messages appear immediately
+        export PYTHONUNBUFFERED=1
+        
+        # Setup messages - print to BOTH terminal AND log file
+        echo "🔧 ANOS - Auto-Setup & Start" | tee -a "$LOG_FILE"
+        echo "===========================" | tee -a "$LOG_FILE"
+        echo "" | tee -a "$LOG_FILE"
+        
+        # Setup venv first
+        setup_venv 2>&1 | tee -a "$LOG_FILE"
+        
+        # Auto-install llama-cpp-python if missing - MUST complete before daemon starts
+        PYTHON_CMD=$(get_python)
+        echo "Checking for llama-cpp-python..." | tee -a "$LOG_FILE"
+        if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+            echo "✓ llama-cpp-python already installed in venv" | tee -a "$LOG_FILE"
+            echo "" | tee -a "$LOG_FILE"
+        else
+            echo "✗ llama-cpp-python NOT installed" | tee -a "$LOG_FILE"
+            echo "" | tee -a "$LOG_FILE"
+            echo "📦 Step 1/2: Installing llama-cpp-python" | tee -a "$LOG_FILE"
+            echo "   (One-time setup, takes 5-10 minutes)" | tee -a "$LOG_FILE"
+            echo "" | tee -a "$LOG_FILE"
+            
+            # Run installation and capture output
+            if check_llama_cpp 2>&1 | tee -a "$LOG_FILE"; then
+                # Wait a moment for Python to recognize the new module
+                sleep 1
+                # Verify installation worked
+                PYTHON_CMD=$(get_python)
+                if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+                    echo "" | tee -a "$LOG_FILE"
+                    echo "✓ Verification: llama-cpp-python is now available in venv" | tee -a "$LOG_FILE"
+                else
+                    echo "" | tee -a "$LOG_FILE"
+                    echo "⚠️  Installation completed but Python can't import it yet" | tee -a "$LOG_FILE"
+                    echo "   Waiting 2 seconds and retrying..." | tee -a "$LOG_FILE"
+                    sleep 2
+                    if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+                        echo "✓ Now working!" | tee -a "$LOG_FILE"
+                    else
+                        echo "⚠️  Still not working. Continuing anyway - may need restart." | tee -a "$LOG_FILE"
+                    fi
+                fi
+            else
+                echo "" | tee -a "$LOG_FILE"
+                echo "⚠️  Installation failed. Check errors above." | tee -a "$LOG_FILE"
+                echo "   Continuing with fallback mode..." | tee -a "$LOG_FILE"
+            fi
+            echo "" | tee -a "$LOG_FILE"
+        fi
+        
+        # Check and download all 4 tier models
+        {
+        echo "📥 Step 2/2: Checking all tier models"
+        echo "   (Models should be in: $PROJECT_ROOT/models/)"
+        echo ""
+        
+        DETECTED_TIER=$(detect_tier)
+        echo "📊 Detected hardware: Tier $DETECTED_TIER (will use this model)"
+        echo ""
+        
+        for tier in 1 2 3 4; do
+            MODEL_FILE="$PROJECT_ROOT/models/tier$tier/model.gguf"
+            if [ -f "$MODEL_FILE" ] && [ -s "$MODEL_FILE" ]; then
+                SIZE=$(du -h "$MODEL_FILE" | cut -f1)
+                echo "✓ Tier $tier: Found ($SIZE)"
+            else
+                echo "✗ Tier $tier: Not found at $MODEL_FILE"
+            fi
+        done
+        
+        echo ""
+        echo "🚀 Starting ANOS..."
+        echo ""
+        echo "--- Daemon logs below ---"
+        echo ""
+        } | tee -a "$LOG_FILE"
+        
+        # Ensure all setup messages are fully flushed before daemon starts
+        sync 2>/dev/null || true
+        sleep 0.5
+        
+        # Start daemon (logs will appear in terminal)
+        start_daemon "" "true"
+        
+        # Wait for daemon to initialize
+        sleep 2
+        {
+        echo ""
+        echo "--- End daemon initialization ---"
+        echo ""
+        } | stdbuf -oL -eL tee -a "$LOG_FILE"
+        
+        start_sidebar
+        echo ""
+        echo "✅ ANOS started!"
+        echo "  - Daemon: running in background (PID: $(cat "$DAEMON_PIDFILE" 2>/dev/null || echo '?'), logs: $LOG_FILE)"
+        echo "  - Sidebar: running (close window to stop)"
+        echo ""
+        echo "To stop everything: anos --stop"
+        echo "To view daemon logs: tail -f $LOG_FILE"
+        echo ""
+        # Wait for sidebar (foreground process)
+        wait
+        # Cleanup on exit
+        stop_all
+        ;;
+    *)
+        echo "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+esac
 

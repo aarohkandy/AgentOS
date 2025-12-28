@@ -32,3 +32,4 @@ class Config:
             # Using simple comma split for now
             return [x.strip() for x in val.strip("[]").split(",")]
         return val
+
