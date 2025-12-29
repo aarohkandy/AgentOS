@@ -4,7 +4,7 @@
     
     "global": {
         "toggle_sidebar": {
-            "keys": "Ctrl+Space",
+            "keys": "Meta+Shift",
             "description": "Toggle the AI sidebar",
             "action": "cosmic.sidebar.toggle"
         },

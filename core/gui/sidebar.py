@@ -1,13 +1,16 @@
 """
 Cosmic OS AI Sidebar
 Main AI assistant interface - slides in from right side (Perplexity Comet style).
-Triggered by Ctrl+Space global hotkey.
+Triggered by Super+Shift (Windows+Shift) global hotkey.
 """
 
 import sys
 import json
 import socket
 import logging
+import subprocess
+import shutil
+import re
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
@@ -26,6 +29,113 @@ from PyQt6.QtGui import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class WindowResizeManager:
+    """
+    Manages screen work area when sidebar opens/closes.
+    Uses _NET_WM_STRUT to reserve screen space, making the system
+    think the available screen area is reduced. This causes maximized
+    and fullscreen windows to automatically only use the left portion.
+    """
+    
+    def __init__(self):
+        self.xprop = shutil.which("xprop")
+        self.sidebar_window_id: Optional[int] = None
+        self.strut_set = False
+        
+    def set_sidebar_window_id(self, window_id: int):
+        """Set the sidebar's window ID for setting strut property."""
+        self.sidebar_window_id = window_id
+    
+    def set_strut(self, sidebar_width: int, screen_height: int):
+        """
+        Set _NET_WM_STRUT property to reserve right edge of screen.
+        
+        Args:
+            sidebar_width: Width of sidebar (pixels to reserve on right)
+            screen_height: Total screen height
+        """
+        if not self.xprop or not self.sidebar_window_id:
+            logger.warning("xprop not available or sidebar window ID not set")
+            return
+        
+        try:
+            # _NET_WM_STRUT format: left, right, top, bottom (in pixels)
+            # We want to reserve the right edge, so:
+            # left=0, right=sidebar_width, top=0, bottom=0
+            # But _NET_WM_STRUT_PARTIAL is better - it allows per-edge specification
+            # Format: left, right, top, bottom, left_start_y, left_end_y, right_start_y, right_end_y, top_start_x, top_end_x, bottom_start_x, bottom_end_x
+            
+            # Use _NET_WM_STRUT_PARTIAL for more precise control
+            # Reserve right edge from top (0) to bottom (screen_height)
+            cmd = [
+                self.xprop,
+                "-id", str(self.sidebar_window_id),
+                "-f", "_NET_WM_STRUT_PARTIAL", "32c",
+                "-set", "_NET_WM_STRUT_PARTIAL",
+                f"0, {sidebar_width}, 0, 0, 0, 0, 0, {screen_height}, 0, 0, 0, 0"
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5
+            )
+            
+            # Also set the simpler _NET_WM_STRUT for compatibility
+            cmd_simple = [
+                self.xprop,
+                "-id", str(self.sidebar_window_id),
+                "-f", "_NET_WM_STRUT", "32c",
+                "-set", "_NET_WM_STRUT",
+                f"0, {sidebar_width}, 0, 0"
+            ]
+            
+            subprocess.run(
+                cmd_simple,
+                capture_output=True,
+                text=True,
+                check=False,  # Don't fail if this doesn't work
+                timeout=5
+            )
+            
+            self.strut_set = True
+            logger.info(f"Set _NET_WM_STRUT to reserve {sidebar_width}px on right edge")
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to set _NET_WM_STRUT: {e}")
+        except Exception as e:
+            logger.error(f"Error setting strut: {e}")
+    
+    def remove_strut(self):
+        """Remove _NET_WM_STRUT property to restore full screen area."""
+        if not self.xprop or not self.sidebar_window_id or not self.strut_set:
+            return
+        
+        try:
+            # Remove both strut properties
+            cmd = [
+                self.xprop,
+                "-id", str(self.sidebar_window_id),
+                "-remove", "_NET_WM_STRUT_PARTIAL"
+            ]
+            subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=5)
+            
+            cmd = [
+                self.xprop,
+                "-id", str(self.sidebar_window_id),
+                "-remove", "_NET_WM_STRUT"
+            ]
+            subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=5)
+            
+            self.strut_set = False
+            logger.info("Removed _NET_WM_STRUT, restored full screen area")
+            
+        except Exception as e:
+            logger.error(f"Error removing strut: {e}")
 
 
 class AIWorker(QThread):
@@ -96,7 +206,9 @@ class MessageBubble(QFrame):
 
         label = QLabel(text)
         label.setWordWrap(True)
-        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.LinksAccessibleByMouse)
+        label.setOpenExternalLinks(True)
+        label.setTextFormat(Qt.TextFormat.RichText)  # Enable HTML rendering
         
         font = QFont("Segoe UI", 11)
         label.setFont(font)
@@ -275,6 +387,7 @@ class CosmicSidebar(QWidget):
         self.messages: List[Dict[str, Any]] = []
         self.current_plan: Optional[dict] = None
         self.ai_worker = AIWorker()
+        self.window_resize_manager = WindowResizeManager()
         
         self.setup_ui()
         self.setup_animations()
@@ -478,6 +591,63 @@ class CosmicSidebar(QWidget):
         # For true global hotkey, need to use system-level binding
         # (handled by KDE keybinding config)
         pass
+    
+    def _set_sidebar_window_id(self):
+        """Set the sidebar window ID for exclusion from resize operations."""
+        try:
+            # Get X11 window ID using xdotool search
+            # Search for window with our title or class
+            xdotool = shutil.which("xdotool")
+            if not xdotool:
+                return
+            
+            # Try searching by window title (may contain "Cosmic" or similar)
+            result = subprocess.run(
+                [xdotool, "search", "--onlyvisible", "--name", "Cosmic"],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Get the most recent window (likely ours)
+                window_ids = [int(wid) for wid in result.stdout.strip().split("\n") if wid]
+                if window_ids:
+                    # Use the last one (most recently created)
+                    self.window_resize_manager.set_sidebar_window_id(window_ids[-1])
+                    logger.debug(f"Set sidebar window ID: {window_ids[-1]}")
+                    return
+            
+            # Fallback: search by PID (our process)
+            import os
+            pid = os.getpid()
+            result = subprocess.run(
+                [xdotool, "search", "--pid", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                window_ids = [int(wid) for wid in result.stdout.strip().split("\n") if wid]
+                if window_ids:
+                    # Use the window that matches our geometry
+                    screen = QApplication.primaryScreen()
+                    screen_geo = screen.availableGeometry()
+                    for wid in window_ids:
+                        # Check if this window matches our position/size
+                        geo_result = subprocess.run(
+                            [xdotool, "getwindowgeometry", str(wid)],
+                            capture_output=True,
+                            text=True,
+                            timeout=1
+                        )
+                        if geo_result.returncode == 0:
+                            # Check if width matches sidebar width
+                            if f"{self.sidebar_width}x" in geo_result.stdout:
+                                self.window_resize_manager.set_sidebar_window_id(wid)
+                                logger.debug(f"Set sidebar window ID via geometry: {wid}")
+                                return
+        except Exception as e:
+            logger.debug(f"Could not set sidebar window ID: {e}")
 
     def toggle_sidebar(self):
         if self.is_visible:
@@ -490,6 +660,21 @@ class CosmicSidebar(QWidget):
             return
         
         self.show()
+        
+        # Update sidebar window ID now that window is shown
+        QTimer.singleShot(50, self._set_sidebar_window_id)
+        
+        # Get screen dimensions
+        screen = QApplication.primaryScreen()
+        screen_geo = screen.availableGeometry()
+        screen_height = screen_geo.height()
+        
+        # Set strut to reserve screen space (with small delay to ensure window is ready)
+        QTimer.singleShot(100, lambda: self.window_resize_manager.set_strut(
+            self.sidebar_width,
+            screen_height
+        ))
+        
         self.slide_anim.setStartValue(self.hidden_pos)
         self.slide_anim.setEndValue(self.shown_pos)
         self.slide_anim.start()
@@ -509,6 +694,9 @@ class CosmicSidebar(QWidget):
     def _on_hide_complete(self):
         self.hide()
         self.slide_anim.finished.disconnect(self._on_hide_complete)
+        
+        # Remove strut to restore full screen area
+        self.window_resize_manager.remove_strut()
 
     def send_message(self):
         text = self.input_field.text().strip()
@@ -582,6 +770,8 @@ class CosmicSidebar(QWidget):
         else:
             # Regular text response (conversational messages, help text, etc.)
             text = result.get("description", str(result))
+            # Clean up text - remove JSON artifacts and format
+            text = self._format_response_text(text)
             self.add_message(text, is_user=False)
         
         QTimer.singleShot(50, self._scroll_to_bottom)
@@ -603,6 +793,49 @@ class CosmicSidebar(QWidget):
     def handle_plan_denied(self):
         self.add_message("❌ Plan denied.", is_user=False)
         self.current_plan = None
+
+    def _format_response_text(self, text: str) -> str:
+        """
+        Format response text with HTML and clean up JSON artifacts.
+        Converts markdown-style formatting to HTML.
+        """
+        if not text:
+            return ""
+        
+        # Remove JSON artifacts (like "{}\nDescription: ...")
+        if text.startswith("{"):
+            # Try to extract just the description part
+            if "Description:" in text:
+                text = text.split("Description:")[-1].strip()
+            elif "description:" in text:
+                text = text.split("description:")[-1].strip()
+        
+        # Remove leading/trailing braces and quotes
+        text = text.strip()
+        if text.startswith("{") and text.endswith("}"):
+            text = text[1:-1].strip()
+        if text.startswith('"') and text.endswith('"'):
+            text = text[1:-1].strip()
+        
+        # Convert markdown-style to HTML
+        import re
+        
+        # Bold: **text** -> <b>text</b>
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        
+        # Italic: *text* -> <i>text</i> (but not if it's part of **)
+        text = re.sub(r'(?<!\*)\*([^*]+?)\*(?!\*)', r'<i>\1</i>', text)
+        
+        # Links: [text](url) -> <a href="url">text</a>
+        text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2" style="color: #0078D4;">\1</a>', text)
+        
+        # Code: `code` -> <code style="background-color: #3D3D3D; padding: 2px 4px; border-radius: 3px;">code</code>
+        text = re.sub(r'`([^`]+)`', r'<code style="background-color: #3D3D3D; padding: 2px 4px; border-radius: 3px; font-family: monospace;">\1</code>', text)
+        
+        # Convert newlines to <br>
+        text = text.replace('\n', '<br>')
+        
+        return text
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:

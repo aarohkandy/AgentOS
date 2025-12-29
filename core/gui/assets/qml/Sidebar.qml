@@ -222,7 +222,7 @@ Window {
     
     // Global shortcut handler (needs to be connected from C++ or Python)
     Shortcut {
-        sequence: "Ctrl+Space"
+        sequence: "Meta+Shift"
         onActivated: toggle()
     }
 }

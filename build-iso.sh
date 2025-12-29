@@ -605,14 +605,14 @@ kwriteconfig5 --file kglobalshortcutsrc \
 
 kwriteconfig5 --file kglobalshortcutsrc \
     --group "cosmic-ai" \
-    --key "toggle-sidebar" "Ctrl+Space,Ctrl+Space,Toggle Cosmic AI Sidebar" 2>/dev/null || true
+    --key "toggle-sidebar" "Meta+Shift,Meta+Shift,Toggle Cosmic AI Sidebar" 2>/dev/null || true
 
 # Start Cosmic AI service
 systemctl --user enable cosmic-ai.service 2>/dev/null || true
 systemctl --user start cosmic-ai.service 2>/dev/null || true
 
 # Show welcome notification
-notify-send "Cosmic OS" "Installation complete! Press Ctrl+Space to open AI sidebar." -t 5000 2>/dev/null || true
+notify-send "Cosmic OS" "Installation complete! Press Super+Shift to open AI sidebar." -t 5000 2>/dev/null || true
 FIRSTBOOT
 
     sudo chmod +x "$CHROOT_DIR/opt/cosmic-os/firstboot.sh"
@@ -813,7 +813,7 @@ main() {
     echo "  6. Boot and install!"
     echo ""
     echo "After installation, Cosmic OS will be pre-configured and ready to use!"
-    echo "Press Ctrl+Space to open the AI sidebar."
+    echo "Press Super+Shift (Windows+Shift) to open the AI sidebar."
     echo ""
 }
 

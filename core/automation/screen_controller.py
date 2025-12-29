@@ -9,6 +9,7 @@ class ScreenController:
     """
     Robust wrapper around xdotool for GUI interaction.
     Handles error checking, delays, and common actions.
+    Excludes sidebar area from screen calculations.
     """
     def __init__(self, config=None):
         self.config = config
@@ -20,9 +21,17 @@ class ScreenController:
         self.click_delay = 0.1
         self.type_delay = 0.05
         
+        # Sidebar configuration - sidebar is on the right side
+        self.sidebar_width = 420  # Sidebar width in pixels
+        self.sidebar_visible = False  # Track if sidebar is visible
+        
         if config:
             self.click_delay = config.get_float("Automation", "click_delay", 0.1)
             self.type_delay = config.get_float("Automation", "type_delay", 0.05)
+        
+        # Get screen dimensions
+        self.screen_width, self.screen_height = self._get_screen_size()
+        self.available_width = self.screen_width - self.sidebar_width  # Exclude sidebar area
 
     def _run(self, args):
         if not self.xdotool:
@@ -37,9 +46,33 @@ class ScreenController:
             logger.error(f"xdotool error: {e}")
             return False
 
+    def _get_screen_size(self):
+        """Get screen resolution."""
+        try:
+            if self.xdotool:
+                output = subprocess.check_output(f"{self.xdotool} getdisplaygeometry", shell=True).decode().strip()
+                width, height = map(int, output.split())
+                return width, height
+        except:
+            pass
+        # Fallback to common resolution
+        return 1920, 1080
+    
+    def _constrain_to_available_area(self, x, y):
+        """Constrain coordinates to available screen area (excluding sidebar)."""
+        # Ensure coordinates are within available area
+        x = max(0, min(x, self.available_width - 1))
+        y = max(0, min(y, self.screen_height - 1))
+        return x, y
+    
+    def set_sidebar_visible(self, visible):
+        """Update sidebar visibility state."""
+        self.sidebar_visible = visible
+    
     def click(self, x, y, button=1):
-        """Click at specific coordinates."""
-        logger.debug(f"Clicking at {x}, {y}")
+        """Click at specific coordinates, constrained to available area (excluding sidebar)."""
+        x, y = self._constrain_to_available_area(x, y)
+        logger.debug(f"Clicking at {x}, {y} (constrained from original {x}, {y})")
         return self._run(f"mousemove {x} {y} click {button}")
 
     def type_text(self, text, delay=None):
@@ -56,11 +89,13 @@ class ScreenController:
         return self._run(f"key {key}")
 
     def drag(self, start_x, start_y, end_x, end_y):
-        """Drag from start to end."""
+        """Drag from start to end, constrained to available area (excluding sidebar)."""
+        start_x, start_y = self._constrain_to_available_area(start_x, start_y)
+        end_x, end_y = self._constrain_to_available_area(end_x, end_y)
         return self._run(f"mousemove {start_x} {start_y} mousedown 1 mousemove {end_x} {end_y} mouseup 1")
 
     def get_mouse_location(self):
-        """Returns (x, y) tuple."""
+        """Returns (x, y) tuple, constrained to available area."""
         if not self.xdotool:
             return (0, 0)
         
@@ -70,9 +105,16 @@ class ScreenController:
             for line in output.splitlines():
                 k, v = line.split("=")
                 vals[k] = int(v)
-            return (vals.get("X", 0), vals.get("Y", 0))
+            x, y = vals.get("X", 0), vals.get("Y", 0)
+            # Constrain to available area
+            x, y = self._constrain_to_available_area(x, y)
+            return (x, y)
         except Exception:
             return (0, 0)
+    
+    def get_available_screen_size(self):
+        """Get available screen size (excluding sidebar)."""
+        return (self.available_width, self.screen_height)
 
     def find_window(self, name):
         """Find window ID by name."""

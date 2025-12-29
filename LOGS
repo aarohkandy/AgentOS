@@ -1,0 +1,31 @@
+aaroh@aaroh-virtualbox:~$ anos
+2025-12-27 20:39:37,703 - CosmicAI - INFO - Initializing Cosmic AI...
+2025-12-27 20:39:37,705 - core.ai_engine.model_manager - INFO - Loading main model from /media/sf_agentOS/models/tier3/model.gguf for Tier 3
+2025-12-27 20:39:37,705 - core.ai_engine.model_manager - INFO - Model size: 4.07 GB
+2025-12-27 20:39:37,706 - core.ai_engine.model_manager - INFO - Using 7 threads for inference (CPU cores: 8, context: 8192)
+llama_context: n_ctx_per_seq (8192) < n_ctx_train (32768) -- the full capacity of the model will not be utilized
+2025-12-27 20:40:28,358 - core.ai_engine.model_manager - INFO - ✅ Main model loaded successfully.
+2025-12-27 20:40:31,104 - core.ai_engine.model_manager - INFO - Loading validator models...
+2025-12-27 20:40:31,109 - core.ai_engine.model_manager - WARNING - Safety validator model not found
+2025-12-27 20:40:31,111 - core.ai_engine.model_manager - INFO -   Safety validator will use heuristics (safe fallback)
+2025-12-27 20:40:31,114 - core.ai_engine.model_manager - WARNING - Logic validator model not found
+2025-12-27 20:40:31,115 - core.ai_engine.model_manager - INFO -   Logic validator will use heuristics (safe fallback)
+2025-12-27 20:40:31,117 - core.ai_engine.model_manager - WARNING - Efficiency validator model not found
+2025-12-27 20:40:31,117 - core.ai_engine.model_manager - INFO -   Efficiency validator will use heuristics (safe fallback)
+2025-12-27 20:40:31,117 - core.ai_engine.model_manager - INFO - ℹ  All 3 validators using heuristic fallback (models not available)
+2025-12-27 20:40:31,117 - core.ai_engine.command_validator - INFO - Validators active: Safety: Heuristics, Logic: Heuristics, Efficiency: Heuristics
+2025-12-27 20:40:31,117 - CosmicAI - INFO - ============================================================
+2025-12-27 20:40:31,118 - CosmicAI - INFO - Cosmic AI Initialization Complete
+2025-12-27 20:40:31,118 - CosmicAI - INFO - ============================================================
+2025-12-27 20:40:31,118 - CosmicAI - INFO - Main Model: Loaded
+2025-12-27 20:40:31,118 - CosmicAI - INFO - Validators: 0/3 with AI models, 3/3 using heuristics
+2025-12-27 20:40:31,118 - CosmicAI - INFO - ============================================================
+2025-12-27 20:40:31,118 - CosmicAI - INFO - Starting IPC Server...
+2025-12-27 20:40:31,122 - core.ai_engine.ipc_server - INFO - DBus server started on com.cosmicos.ai
+2025-12-27 20:40:31,123 - core.ai_engine.ipc_server - INFO - Socket server started on /tmp/cosmic-ai.sock
+2025-12-27 20:40:49,288 - core.ai_engine.ipc_server - INFO - Received DBus request: hey
+2025-12-27 20:40:49,289 - CosmicAI - INFO - Processing request: hey
+2025-12-27 20:41:14,316 - core.ai_engine.ipc_server - INFO - Received Socket request: hey
+2025-12-27 20:41:14,322 - CosmicAI - INFO - Processing request: hey
+2025-12-27 20:41:56,699 - core.ai_engine.ipc_server - ERROR - Socket error: [Errno 32] Broken pipe
+
