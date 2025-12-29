@@ -78,7 +78,7 @@ def test_config():
         tier = config.get("AI", "tier", fallback="auto")
         log_pass(f"Config loaded, AI tier: {tier}")
         
-        hotkey = config.get("GUI", "hotkey", fallback="Ctrl+Space")
+        hotkey = config.get("GUI", "hotkey", fallback="Meta+Shift")
         log_pass(f"GUI hotkey: {hotkey}")
         
         return True

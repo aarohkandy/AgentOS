@@ -52,13 +52,15 @@ class ModelManager:
             
         # Tier detection logic
         if total_ram_gb >= 64 or has_high_end_gpu:
-            return 4  # Very Powerful - DeepSeek-V3/Llama 3.1 70B
+            return 5  # Very Powerful - DeepSeek-V3/Llama 3.1 70B
         elif total_ram_gb >= 16 or gpu_vram_gb >= 8:
-            return 3  # Medium - Phi-4 14B
-        elif total_ram_gb >= 2:
-            return 2  # Low - Llama 3.2 3B
+            return 4  # Very Powerful - Llama 3.1 8B (formerly Hard)
+        elif total_ram_gb >= 4 or gpu_vram_gb >= 4:
+            return 3  # Hard - Llama 3.2 3B (formerly Mid)
+        elif total_ram_gb >= 1:
+            return 2  # Mid - Qwen 2.5 0.5B (formerly Easy)
         else:
-            return 1  # EXTREME Easy - Qwen 2.5 0.5B
+            return 1  # Easy - TinyLlama 1.1B (super light)
 
     def load_models(self):
         # Try to import Llama if not already available
@@ -146,68 +148,81 @@ class ModelManager:
         # Tier 2 and 1: CPU only (smaller models)
         n_gpu_layers = -1 if self.tier >= 3 else 0
         
-        # Context window based on tier (larger models support larger contexts)
-        # Increase context for systems with more RAM to utilize available memory
-        total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+        # Context window based on tier - maximize for better performance
         context_sizes = {
-            1: 32768,  # Qwen 2.5 0.5B supports large context
-            2: 8192,   # Llama 3.2 3B
-            3: 8192,   # Phi-4 14B (base)
-            4: 128000  # DeepSeek-V3 supports very large context
+            1: 32768,  # TinyLlama 1.1B supports large context
+            2: 32768,  # Qwen 2.5 0.5B supports large context
+            3: 8192,   # Llama 3.2 3B
+            4: 8192,   # Llama 3.1 8B
+            5: 128000  # DeepSeek-V3 supports very large context
         }
-        n_ctx = context_sizes.get(self.tier, 2048)
-        
-        # If we have lots of RAM, increase context window to use more memory
-        # Tier 3 with 22GB+ RAM can handle larger context
-        if self.tier == 3 and total_ram_gb >= 20:
-            n_ctx = 16384  # Double the context for systems with plenty of RAM
-            logger.info(f"Detected {total_ram_gb:.1f}GB RAM - increasing context window to {n_ctx} to utilize available memory")
-        elif self.tier == 4 and total_ram_gb >= 60:
-            n_ctx = min(32768, n_ctx)  # Cap at 32K for tier 4 with lots of RAM
-            logger.info(f"Detected {total_ram_gb:.1f}GB RAM - using context window {n_ctx}")
+        n_ctx = context_sizes.get(self.tier, 8192)
         
         # Calculate optimal thread count for CPU inference
-        # Use all available cores, but leave 1 free for system responsiveness
+        # Use ALL available cores for 100% CPU utilization
         cpu_count = psutil.cpu_count(logical=True)
         if cpu_count is None:
             # Fallback for containerized/restricted environments
             cpu_count = 4
             logger.warning("Could not detect CPU count, defaulting to 4 threads")
-        n_threads = max(1, cpu_count - 1) if cpu_count > 1 else cpu_count
+        n_threads = cpu_count  # Use all cores for 100% CPU utilization
         
         # Validate parameters before model initialization
         n_threads, n_ctx = self._validate_model_params(n_threads, n_ctx)
         logger.info(f"Using {n_threads} threads for inference (CPU cores: {cpu_count}, context: {n_ctx})")
         
         try:
-            # Memory optimization parameters
-            # n_batch: batch size for prompt processing (larger = faster but more memory)
-            # For tier 3 with 22GB+ RAM, we can use larger batches
-            n_batch = 512 if self.tier >= 3 else 256
-            
-            # use_mlock: lock model in RAM for better performance (requires sufficient RAM)
-            # Only enable if we have enough RAM (model size + context overhead)
-            total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+            # Memory parameters - maximize for 100% CPU and unlimited memory usage
+            # n_batch: batch size for prompt processing (larger = more CPU usage, more memory)
             model_size_gb = model_path.stat().st_size / (1024 ** 3)
-            use_mlock = (total_ram_gb >= model_size_gb * 2) and (total_ram_gb >= 16)
             
-            logger.info(f"Model loading params: n_batch={n_batch}, use_mlock={use_mlock}, total_ram={total_ram_gb:.1f}GB, model_size={model_size_gb:.2f}GB")
+            # Use maximum batch size to keep all CPU cores busy and maximize memory usage
+            n_batch = 2048  # Large batch size for maximum CPU utilization
             
-            self.main_model = llama_class(
-                model_path=str(model_path),
-                n_gpu_layers=n_gpu_layers,
-                n_ctx=n_ctx,
-                n_threads=n_threads,
-                n_batch=n_batch,
-                use_mlock=use_mlock,
-                verbose=False
-            )
+            # use_mmap: Memory-mapped files (more efficient, allows OS to manage memory)
+            use_mmap = True
+            
+            # use_mlock: Try to enable for better performance (allows unlimited memory usage)
+            # Falls back gracefully if permissions don't allow
+            total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+            use_mlock = True  # Enable memory locking for better performance
+            
+            logger.info(f"Model loading params: n_batch={n_batch}, use_mmap={use_mmap}, use_mlock={use_mlock}, total_ram={total_ram_gb:.1f}GB, model_size={model_size_gb:.2f}GB")
+            logger.info("Initializing model (this may take 30-60 seconds for a 4GB model)...")
+            
+            try:
+                self.main_model = llama_class(
+                    model_path=str(model_path),
+                    n_gpu_layers=n_gpu_layers,
+                    n_ctx=n_ctx,
+                    n_threads=n_threads,
+                    n_batch=n_batch,
+                    use_mmap=use_mmap,
+                    use_mlock=use_mlock,
+                    verbose=False
+                )
+                logger.info("Model object created, loading weights...")
+            except PermissionError as e:
+                # use_mlock requires privileges, try without it
+                logger.warning(f"Failed to lock memory (use_mlock): {e}")
+                logger.info("Retrying without memory locking...")
+                use_mlock = False
+                self.main_model = llama_class(
+                    model_path=str(model_path),
+                    n_gpu_layers=n_gpu_layers,
+                    n_ctx=n_ctx,
+                    n_threads=n_threads,
+                    n_batch=n_batch,
+                    use_mmap=use_mmap,
+                    use_mlock=False,
+                    verbose=False
+                )
             
             # Log actual memory usage after loading
-            import psutil
             process = psutil.Process()
             mem_usage = process.memory_info().rss / (1024 ** 3)
-            logger.info(f"✅ Main model loaded successfully. Process memory: {mem_usage:.2f} GB")
+            available_ram_gb = psutil.virtual_memory().available / (1024 ** 3)
+            logger.info(f"✅ Main model loaded successfully. Process memory: {mem_usage:.2f} GB (Available: {available_ram_gb:.2f} GB)")
             
             # Test model health with a simple inference
             if not self._test_model(self.main_model):
@@ -264,12 +279,12 @@ class ModelManager:
             
             try:
                 logger.info(f"Loading {name} validator from {model_path}")
-                # Use fewer threads for validators (they're smaller and faster)
+                # Use more threads for validators to increase CPU utilization
                 cpu_count = psutil.cpu_count(logical=True)
                 if cpu_count is None:
                     # Fallback for containerized/restricted environments
                     cpu_count = 4
-                validator_threads = max(1, min(4, cpu_count // 2))
+                validator_threads = max(1, cpu_count - 1)  # Use most cores for validators too
                 validator_ctx = 1024  # Smaller context for validators
                 
                 # Validate validator parameters
@@ -348,11 +363,14 @@ class ModelManager:
             True if model responds correctly, False otherwise
         """
         if model is None:
+            logger.warning("Health check: model is None")
             return False
         
         try:
             # Simple test prompt
             test_prompt = "Hello"
+            logger.debug(f"Health check: Testing with prompt '{test_prompt}'")
+            
             result = model(
                 test_prompt,
                 max_tokens=5,
@@ -360,21 +378,23 @@ class ModelManager:
                 echo=False
             )
             
+            logger.debug(f"Health check: Model returned result type: {type(result)}")
+            
             # Check if we got a valid response
             if result and 'choices' in result and len(result['choices']) > 0:
-                logger.debug("Model health check passed")
+                logger.info("✅ Model health check passed")
                 return True
             else:
-                logger.warning("Model health check failed: invalid response structure")
+                logger.warning(f"Model health check failed: invalid response structure. Result: {result}")
                 return False
         except SystemError as e:
-            logger.error(f"Model health check failed with SystemError (possible crash): {e}")
+            logger.error(f"Model health check failed with SystemError (possible crash): {e}", exc_info=True)
             return False
         except RuntimeError as e:
-            logger.error(f"Model health check failed with RuntimeError: {e}")
+            logger.error(f"Model health check failed with RuntimeError: {e}", exc_info=True)
             return False
         except Exception as e:
-            logger.warning(f"Model health check failed with exception: {e}")
+            logger.warning(f"Model health check failed with exception: {type(e).__name__}: {e}", exc_info=True)
             return False
 
     def _auto_install_llama_cpp(self):

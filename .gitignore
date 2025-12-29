@@ -36,8 +36,10 @@ Thumbs.db
 *.bak
 *~
 
-# AI Models (too large for GitHub - use install-models.sh to download)
-models/tier*/model.gguf
+# AI Models - too large for Git, download via install-models.sh
+# Models are downloaded from HuggingFace on-demand
 models/tier*/*.gguf
+models/tier*/*.part*
 models/validators/*.gguf
 *.gguf
+*.part*

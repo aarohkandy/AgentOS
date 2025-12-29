@@ -242,7 +242,7 @@ EOF
 
 # Setup keyboard shortcut
 setup_hotkey() {
-    log_step "Setting up Ctrl+Space hotkey..."
+    log_step "Setting up Super+Shift hotkey..."
     
     if command -v kwriteconfig5 &> /dev/null; then
         kwriteconfig5 --file kglobalshortcutsrc \
@@ -251,7 +251,7 @@ setup_hotkey() {
         
         kwriteconfig5 --file kglobalshortcutsrc \
             --group "cosmic-ai" \
-            --key "toggle-sidebar" "Ctrl+Space,Ctrl+Space,Toggle Cosmic AI Sidebar"
+            --key "toggle-sidebar" "Meta+Shift,Meta+Shift,Toggle Cosmic AI Sidebar"
         
         log_info "Hotkey configured"
     else
@@ -312,7 +312,7 @@ print_complete() {
     echo ""
     echo "Next steps:"
     echo "  1. Log out and log back in (or reboot)"
-    echo "  2. Press Ctrl+Space to open the AI sidebar"
+    echo "  2. Press Super+Shift (Windows+Shift) to open the AI sidebar"
     echo "  3. Try: 'Open Firefox'"
     echo ""
     echo "Useful commands:"

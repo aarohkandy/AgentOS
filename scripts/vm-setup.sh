@@ -188,14 +188,14 @@ setup_shortcuts() {
     
     MOUNT_POINT="/mnt/cosmic-os"
     
-    # Add Ctrl+Space shortcut for sidebar
+    # Add Super+Shift shortcut for sidebar
     kwriteconfig5 --file kglobalshortcutsrc \
         --group "cosmic-ai" \
         --key "_k_friendly_name" "Cosmic AI"
     
     kwriteconfig5 --file kglobalshortcutsrc \
         --group "cosmic-ai" \
-        --key "toggle-sidebar" "Ctrl+Space,Ctrl+Space,Toggle Cosmic AI Sidebar"
+        --key "toggle-sidebar" "Meta+Shift,Meta+Shift,Toggle Cosmic AI Sidebar"
     
     # Create desktop entry for the sidebar
     mkdir -p "$HOME/.local/share/applications"

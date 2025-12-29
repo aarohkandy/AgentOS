@@ -14,26 +14,40 @@ class CommandGenerator:
         self._model_lock = threading.Lock()  # Thread safety for model access
         self.system_prompt = """You are Cosmic AI, an intelligent assistant that controls a Linux computer GUI through natural language.
 
-When the user wants to perform actions, output a JSON plan with these available actions:
-- {"action": "click", "target": "name_or_desc", "location": [x, y], "button": "left"|"right"}
-- {"action": "type", "text": "string to type"}
-- {"action": "key", "key": "key_name" (e.g., Return, Super_L, control+c)}
-- {"action": "wait", "seconds": float}
-- {"action": "drag", "start": [x1, y1], "end": [x2, y2]}
+IMPORTANT: Keep responses SIMPLE for simple queries. Don't overthink.
 
-For conversational messages (greetings, questions, chat), respond naturally with only:
+For SIMPLE queries (math, time, quick questions, greetings):
+- Just answer directly in the "description" field
+- NO action plan needed
+- Examples: "5*5", "what time is it", "hello", "how are you"
+- Response format: {"description": "Your direct answer here"}
+
+For COMPLEX tasks that require multiple steps (download, install, multi-step operations):
+- Break into step-by-step action plan
+- Use these available actions:
+  - {"action": "click", "target": "name_or_desc", "location": [x, y], "button": "left"|"right"}
+  - {"action": "type", "text": "string to type"}
+  - {"action": "key", "key": "key_name" (e.g., Return, Super_L, control+c)}
+  - {"action": "wait", "seconds": float}
+  - {"action": "drag", "start": [x1, y1], "end": [x2, y2]}
+- Response format:
 {
-    "description": "Your natural, friendly, conversational response here"
+    "plan": [list of actions],
+    "description": "What you're doing",
+    "estimated_time": seconds,
+    "complex": true
 }
 
-For action requests, output:
+For GUI actions (open app, click button, etc.):
+- Create action plan with GUI commands
+- Response format:
 {
     "plan": [list of actions],
     "description": "What you're doing",
     "estimated_time": seconds
 }
 
-Always respond intelligently and naturally. Be helpful and conversational."""
+Be direct and efficient. Don't create unnecessary steps for simple queries."""
 
     def _extract_json(self, text):
         """
@@ -92,9 +106,13 @@ Always respond intelligently and naturally. Be helpful and conversational."""
             return {"description": text, "fallback_mode": True}
 
     def generate(self, user_message, screen_context=None):
+        """Generate a command plan from user message."""
+        logger.info(f"CommandGenerator.generate called (model available: {self.model is not None})")
         if self.model:
+            logger.info("Using local model for generation")
             return self._generate_with_model(user_message)
         else:
+            logger.info("No local model available, using API fallback")
             # Try to use online AI API as fallback
             return self._generate_with_api_fallback(user_message)
 
@@ -110,6 +128,7 @@ Always respond intelligently and naturally. Be helpful and conversational."""
             try:
                 # Log memory usage before generation
                 import psutil
+                import time
                 process = psutil.Process()
                 mem_before = process.memory_info().rss / (1024 ** 3)  # GB
                 logger.info(f"Starting generation for: '{user_message[:50]}...' (Memory before: {mem_before:.2f} GB)")
@@ -119,19 +138,35 @@ Always respond intelligently and naturally. Be helpful and conversational."""
                     logger.warning(f"Prompt too long ({len(prompt)} chars), truncating")
                     prompt = prompt[:100000]
                 
-                logger.debug(f"Calling model with prompt length: {len(prompt)} chars, max_tokens: 512")
+                logger.debug(f"Calling model with prompt length: {len(prompt)} chars, max_tokens: 1024")
                 
+                # Log available memory to help diagnose memory issues
+                available_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+                total_mem_gb = psutil.virtual_memory().total / (1024 ** 3)
+                logger.info(f"System memory: {total_mem_gb:.2f} GB total, {available_mem_gb:.2f} GB available")
+                
+                # Call model with streaming disabled (we want the full response)
+                start_time = time.time()
+                logger.info("Model inference starting...")
+                
+                # Use maximum tokens and aggressive settings for 100% CPU usage
                 output = self.model(
                     prompt,
-                    max_tokens=512,
+                    max_tokens=2048,  # Maximum tokens for 100% CPU utilization
                     stop=["User Request:", "JSON Plan:"],
-                    echo=False
+                    echo=False,
+                    temperature=0.7,  # Add temperature for more varied generation
+                    top_p=0.9,  # Nucleus sampling for more computation
+                    repeat_penalty=1.1  # Additional computation
                 )
+                
+                elapsed = time.time() - start_time
+                logger.info(f"Model inference completed in {elapsed:.2f}s")
                 
                 # Log memory usage after generation
                 mem_after = process.memory_info().rss / (1024 ** 3)  # GB
                 mem_delta = mem_after - mem_before
-                logger.info(f"Generation complete (Memory after: {mem_after:.2f} GB, delta: {mem_delta:+.2f} GB)")
+                logger.info(f"Generation complete in {elapsed:.2f}s (Memory after: {mem_after:.2f} GB, delta: {mem_delta:+.2f} GB)")
                 
                 if not output or 'choices' not in output or len(output['choices']) == 0:
                     logger.error("Model returned invalid output structure")

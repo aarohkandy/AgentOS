@@ -34,25 +34,29 @@ fi
 CONFIG_FILE="$PROJECT_DIR/config/model-urls.json"
 
 # Model URLs (GGUF format for llama.cpp)
-# Tier 1: EXTREME Easy - Qwen 2.5 0.5B (<1GB RAM)
-# Using TinyLlama as fallback (known to work, <1GB)
+# Updated tier structure:
+# Tier 1: Super Light Easy - TinyLlama 1.1B (<512MB RAM) - NEW
 declare -A TIER1_MODELS=(
     ["tinyllama"]="https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
 )
 
-# Tier 2: Low - Llama 3.2 3B (2-4GB RAM)
+# Tier 2: Easy - Qwen 2.5 0.5B (1-4GB RAM) - was Tier 1
 declare -A TIER2_MODELS=(
+    ["qwen2.5-0.5b"]="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+)
+
+# Tier 3: Mid - Llama 3.2 3B (4-16GB RAM) - was Tier 2
+declare -A TIER3_MODELS=(
     ["llama3.2-3b"]="https://huggingface.co/TheBloke/Llama-3.2-3B-Instruct-GGUF/resolve/main/llama-3.2-3b-instruct.Q4_K_M.gguf"
 )
 
-# Tier 3: Medium - Llama 3.1 8B (16-32GB RAM, 8-12GB VRAM)
-# Using Qwen 2.5 7B as it's verified to work
-declare -A TIER3_MODELS=(
-    ["qwen2.5-7b"]="https://huggingface.co/TheBloke/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct.Q4_K_M.gguf"
+# Tier 4: Hard - Llama 3.1 8B (16GB+ RAM, 8GB+ VRAM) - was Tier 3
+declare -A TIER4_MODELS=(
+    ["llama3.1-8b"]="https://huggingface.co/TheBloke/Llama-3.1-8B-Instruct-GGUF/resolve/main/llama-3.1-8b-instruct.Q4_K_M.gguf"
 )
 
-# Tier 4: Very Powerful - Llama 3.1 70B (64GB+ RAM, 40GB+ VRAM)
-declare -A TIER4_MODELS=(
+# Tier 5: Very Powerful - Llama 3.1 70B (64GB+ RAM, 40GB+ VRAM) - was Tier 4
+declare -A TIER5_MODELS=(
     ["llama3.1-70b"]="https://huggingface.co/TheBloke/Llama-3.1-70B-Instruct-GGUF/resolve/main/llama-3.1-70b-instruct.Q4_K_M.gguf"
 )
 
