@@ -9,25 +9,63 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from core.ai_engine.config import Config, DEFAULT_LOG_FILE
-from core.ai_engine.model_manager import ModelManager
 from core.ai_engine.command_generator import CommandGenerator
 from core.ai_engine.command_validator import CommandValidator
 from core.ai_engine.executor import Executor
 from core.ai_engine.ipc_server import IPCServer
+
+# Import API client and conversation context
+try:
+    from core.ai_engine.api_client import UnifiedAPIClient, get_api_client
+except (ImportError, Exception) as e:
+    # Import failed - log after logger is set up
+    import sys
+    print(f"ERROR: Failed to import API client: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc()
+    UnifiedAPIClient = None
+    get_api_client = None
+
+try:
+    from core.ai_engine.conversation_context import ConversationContext, get_conversation_context
+except (ImportError, Exception) as e:
+    import sys
+    print(f"ERROR: Failed to import conversation context: {e}", file=sys.stderr)
+    ConversationContext = None
+    get_conversation_context = None
 
 # Configure logging with absolute path
 log_file = Path(DEFAULT_LOG_FILE)
 if not log_file.is_absolute():
     log_file = project_root / DEFAULT_LOG_FILE
 
+# Configure logging - reduce verbosity (suppress QPainter and other Qt noise)
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.WARNING,  # Only show warnings and errors by default
+    format='%(levelname)s - %(message)s',  # Shorter format
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(str(log_file))
     ]
 )
+
+# Set specific loggers to appropriate levels
+logging.getLogger("CosmicAI").setLevel(logging.INFO)  # Main logger at INFO
+logging.getLogger("core.ai_engine").setLevel(logging.WARNING)  # AI engine at WARNING
+logging.getLogger("core.automation").setLevel(logging.ERROR)  # Automation at ERROR only
+logging.getLogger("core.gui").setLevel(logging.ERROR)  # GUI at ERROR only
+
+# Suppress Qt/PyQt6 noise
+logging.getLogger("PyQt6").setLevel(logging.CRITICAL)
+logging.getLogger("qt").setLevel(logging.CRITICAL)
+logging.getLogger("PyQt6.QtCore").setLevel(logging.CRITICAL)
+logging.getLogger("PyQt6.QtGui").setLevel(logging.CRITICAL)
+logging.getLogger("PyQt6.QtWidgets").setLevel(logging.CRITICAL)
+
+# Suppress QPainter warnings (they're harmless)
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*QPainter.*")
+
 logger = logging.getLogger("CosmicAI")
 
 class CosmicAI:
@@ -48,21 +86,69 @@ class CosmicAI:
         try:
             self.config = Config()
             
-            self.model_manager = ModelManager(self.config)
-            try:
-                self.model_manager.load_models()
-            except Exception as e:
-                logger.error(f"Failed to load models: {e}", exc_info=True)
-                logger.warning("Continuing with fallback mode...")
+            # Check if we should use online API
+            use_online_api = self.config.get("AI", "use_online_api", fallback="true").lower() == "true"
+            logger.info(f"Online API mode: {use_online_api}")
             
-            try:
-                self.model_manager.load_validators()
-            except Exception as e:
-                logger.error(f"Failed to load validators: {e}", exc_info=True)
-                logger.warning("Validators will use heuristics only...")
+            # Initialize API client if online mode is enabled
+            self.api_client = None
+            self.conversation_context = None
             
-            self.command_gen = CommandGenerator(self.model_manager.main_model)
-            self.validators = CommandValidator(self.model_manager.validator_models)
+            if use_online_api:
+                # Get API configuration
+                groq_model = self.config.get("API", "groq_model", fallback="llama-3.1-70b-versatile")
+                groq_fallback = self.config.get("API", "groq_fallback_model", fallback="mixtral-8x7b-32768")
+                openrouter_model = self.config.get("API", "openrouter_model", fallback="deepseek/deepseek-chat")
+                openrouter_fallback = self.config.get("API", "openrouter_fallback_model", fallback="google/gemini-flash-1.5")
+                max_context = int(self.config.get("API", "max_context_messages", fallback="50"))
+                enable_web_search = self.config.get("API", "enable_web_search", fallback="true").lower() == "true"
+                timeout = int(self.config.get("API", "timeout", fallback="30"))
+                temperature = float(self.config.get("AI", "temperature", fallback="0.7"))
+                max_tokens = int(self.config.get("AI", "max_tokens", fallback="512"))
+                
+                # Initialize API client
+                if get_api_client:
+                    try:
+                        self.api_client = get_api_client(
+                            groq_model=groq_model,
+                            groq_fallback_model=groq_fallback,
+                            openrouter_model=openrouter_model,
+                            openrouter_fallback_model=openrouter_fallback,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            timeout=timeout
+                        )
+                        logger.info("API client initialized")
+                    except Exception as e:
+                        logger.error(f"Failed to initialize API client: {e}")
+                        self.api_client = None
+                else:
+                    logger.error("API client module import failed - check .env file exists")
+                    self.api_client = None
+                
+                # Initialize conversation context
+                if get_conversation_context:
+                    try:
+                        self.conversation_context = get_conversation_context(
+                            max_messages=max_context,
+                            enable_web_search=enable_web_search
+                        )
+                        logger.debug("Conversation context initialized")
+                    except Exception as e:
+                        logger.warning(f"Failed to initialize conversation context: {e}")
+                        self.conversation_context = None
+            
+            # Initialize command generator with API client and context (online API only)
+            # No local models - we only use Groq/OpenRouter API
+            self.command_gen = CommandGenerator(
+                model=None,  # No local models
+                api_client=self.api_client,
+                context=self.conversation_context,
+                use_online_api=True  # Always use online API
+            )
+            
+            # Validators use heuristics only (no local AI models)
+            self.validators = CommandValidator({})
             self.executor = Executor()
             self.ipc = IPCServer(self)
             
@@ -70,31 +156,31 @@ class CosmicAI:
             self._preload_common_queries()
             
             # Log initialization summary
-            logger.info("=" * 60)
-            logger.info("Cosmic AI Initialization Complete")
-            logger.info("=" * 60)
-            logger.info(f"Main Model: {'Loaded' if self.model_manager.main_model else 'Not loaded (using fallback)'}")
-            validator_count = sum(1 for v in self.model_manager.validator_models.values() if v is not None)
-            logger.info(f"Validators: {validator_count}/3 with AI models, {3-validator_count}/3 using heuristics")
-            logger.info("=" * 60)
+            # Log initialization summary (concise)
+            if use_online_api and self.api_client:
+                api_status = self.api_client.get_status()
+                logger.info(f"Ready - Groq API: {api_status['groq_keys_available']} keys, Model: {api_status['groq_model']}")
+            elif use_online_api:
+                logger.error("API client not available - check .env file and API keys")
+            else:
+                logger.warning("Online API disabled in config")
         except Exception as e:
-            logger.critical(f"Critical error during initialization: {e}", exc_info=True)
-            logger.error("System will attempt to continue with minimal functionality...")
+            logger.error(f"Initialization error: {e}")
             # Set up minimal fallback components
             self.config = Config()
-            self.model_manager = None
+            self.api_client = None
+            self.conversation_context = None
             self.command_gen = None
-            self.validators = None
+            self.validators = CommandValidator({})
             self.executor = Executor()
             self.ipc = IPCServer(self)
         
     def start(self):
-        logger.info("Starting IPC Server...")
+        logger.info("Starting...")
         try:
             self.ipc.start()
         except Exception as e:
-            logger.error(f"Failed to start IPC server: {e}", exc_info=True)
-            logger.error("Cannot continue without IPC server. Exiting...")
+            logger.error(f"Failed to start IPC server: {e}")
             sys.exit(1)
         
         # Main loop with comprehensive error recovery
@@ -164,7 +250,7 @@ class CosmicAI:
     def process_request(self, user_message):
         """Process user request with comprehensive error handling - never crashes."""
         try:
-            logger.info(f"Processing request: {user_message}")
+            logger.debug(f"Processing: {user_message[:50]}...")
             
             # 1. Generate command plan
             try:
@@ -174,24 +260,21 @@ class CosmicAI:
                 if "error" in plan:
                     return plan
             except Exception as e:
-                logger.error(f"Error generating plan: {e}", exc_info=True)
+                logger.error(f"Error generating plan: {e}")
                 return {"error": f"Failed to generate plan: {str(e)}"}
                 
             # 2. Validate
             try:
-                if self.validators is None:
-                    logger.warning("Validators not available, skipping validation")
-                elif not self.validators.approve_all(plan):
+                if self.validators and not self.validators.approve_all(plan):
                     return {"success": False, "error": "Plan rejected by validators", "plan": plan}
             except Exception as e:
-                logger.error(f"Error during validation: {e}", exc_info=True)
-                logger.warning("Validation failed, but continuing with plan...")
+                logger.warning(f"Validation error: {e}")
             
             # Return plan for GUI approval (execution happens via execute_plan_request)
             return plan
             
         except Exception as e:
-            logger.critical(f"Critical error in process_request: {e}", exc_info=True)
+            logger.error(f"Error in process_request: {e}")
             return {"error": f"System error: {str(e)}. Please try again."}
 
     def _preload_common_queries(self):
@@ -199,58 +282,58 @@ class CosmicAI:
         if not self.command_gen or not self.command_gen.cache:
             return
         
-        common_queries = [
-            "hello",
-            "hi",
-            "what time is it",
-            "system info",
-            "help",
-            "what can you do"
-        ]
+        common_queries = ["hello", "hi", "what time is it", "system info", "help", "what can you do"]
         
-        logger.info("Preloading common queries for instant responses...")
         for query in common_queries:
             try:
-                # Generate and cache common queries
-                result = self.command_gen.generate(query)
-                if result and not result.get("error"):
-                    logger.debug(f"Preloaded: {query}")
-            except Exception as e:
-                logger.debug(f"Failed to preload {query}: {e}")
-        
-        logger.info(f"Preloaded {len(common_queries)} common queries for instant responses")
+                self.command_gen.generate(query)
+            except Exception:
+                pass  # Silent fail for preloading
     
     def execute_plan_request(self, plan):
-        """
-        Separate endpoint for when user approves the plan.
-        Never crashes - always returns a result with comprehensive error handling.
-        """
+        """Execute approved plan."""
         try:
-            logger.info("User approved plan. Executing...")
+            logger.debug("Executing plan...")
             
-            # Validate plan
             if not plan or not isinstance(plan, dict):
-                return {"success": False, "error": "Invalid plan: must be a dictionary"}
+                return {"success": False, "error": "Invalid plan"}
             
             if self.executor is None:
                 return {"success": False, "error": "Executor not available"}
             
-            # Execute with timeout protection
             try:
                 result = self.executor.execute(plan)
-                if result is None:
-                    return {"success": False, "error": "Execution returned no result"}
-                return result
-            except KeyboardInterrupt:
-                logger.warning("Execution interrupted by user")
-                return {"success": False, "error": "Execution interrupted"}
+                return result if result else {"success": False, "error": "Execution returned no result"}
             except Exception as e:
-                logger.error(f"Error during execution: {e}", exc_info=True)
+                logger.error(f"Execution error: {e}")
                 return {"success": False, "error": f"Execution failed: {str(e)}"}
                 
         except Exception as e:
-            logger.critical(f"Unexpected error in execute_plan_request: {e}", exc_info=True)
+            logger.error(f"Error in execute_plan_request: {e}")
             return {"success": False, "error": f"Unexpected error: {str(e)}"}
+    
+    def clear_conversation(self):
+        """Clear the conversation context."""
+        if self.command_gen:
+            self.command_gen.clear_context()
+            return {"success": True, "message": "Conversation context cleared"}
+        return {"success": False, "error": "Command generator not available"}
+    
+    def get_status(self):
+        """Get the current status of the AI system."""
+        status = {
+            "online_api": self.api_client is not None,
+            "local_model": False,  # No local models - online API only
+            "conversation_context": self.conversation_context is not None,
+        }
+        
+        if self.api_client:
+            status["api_status"] = self.api_client.get_status()
+        
+        if self.conversation_context:
+            status["context_summary"] = self.conversation_context.get_summary()
+        
+        return status
 
 if __name__ == "__main__":
     try:

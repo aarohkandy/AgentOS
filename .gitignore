@@ -43,3 +43,8 @@ models/tier*/*.part*
 models/validators/*.gguf
 *.gguf
 *.part*
+
+# Environment files with API keys
+.env
+.env.local
+.env.*.local
