@@ -443,6 +443,7 @@ class MessageBubble(QFrame):
     def setup_ui(self, text: str):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(0)
 
         label = QLabel(text)
         label.setWordWrap(True)
@@ -452,16 +453,19 @@ class MessageBubble(QFrame):
         
         # iOS-quality typography - SF Pro Text for perfect readability
         font = QFont("SF Pro Text", 15)
+        if font.family() != "SF Pro Text":
+            font = QFont("Arial", 15)  # Fallback font
         label.setFont(font)
+        
+        # Ensure label has proper minimum size
+        label.setMinimumHeight(20)
         
         if self.is_user:
             # User message - Perfect iOS blue (#007AFF) with premium styling
             self.setStyleSheet("""
-                MessageBubble {
+                QFrame {
                     background-color: #007AFF;
                     border-radius: 20px;
-                    margin-left: 60px;
-                    margin-right: 16px;
                     border: none;
                 }
                 QLabel {
@@ -473,20 +477,14 @@ class MessageBubble(QFrame):
                     padding: 2px;
                 }
             """)
-            # Add subtle shadow for depth (iOS-style)
-            shadow = QGraphicsDropShadowEffect()
-            shadow.setBlurRadius(8)
-            shadow.setColor(QColor(0, 122, 255, 50))
-            shadow.setOffset(0, 2)
-            self.setGraphicsEffect(shadow)
+            # Set margins for user messages (left margin pushes to right)
+            self.setContentsMargins(60, 4, 16, 4)
         else:
             # AI message - Perfect iOS gray with subtle border and shadow
             self.setStyleSheet("""
-                MessageBubble {
+                QFrame {
                     background-color: rgba(44, 44, 46, 0.95);
                     border-radius: 20px;
-                    margin-right: 60px;
-                    margin-left: 16px;
                     border: 1px solid rgba(255, 255, 255, 0.08);
                 }
                 QLabel {
@@ -497,14 +495,18 @@ class MessageBubble(QFrame):
                     padding: 2px;
                 }
             """)
-            # Add subtle shadow for depth
-            shadow = QGraphicsDropShadowEffect()
-            shadow.setBlurRadius(6)
-            shadow.setColor(QColor(0, 0, 0, 30))
-            shadow.setOffset(0, 1)
-            self.setGraphicsEffect(shadow)
+            # Set margins for AI messages (right margin pushes to left)
+            self.setContentsMargins(16, 4, 60, 4)
+        
+        # Set minimum size to ensure visibility
+        self.setMinimumHeight(30)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         
         layout.addWidget(label)
+        
+        # Ensure widget is visible
+        self.setVisible(True)
+        self.show()
 
 
 class CommandPlanWidget(QFrame):
@@ -733,6 +735,7 @@ class CosmicSidebar(QWidget):
         """)
         
         self.chat_widget = QWidget()
+        self.chat_widget.setStyleSheet("background-color: transparent;")
         self.chat_layout = QVBoxLayout(self.chat_widget)
         self.chat_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.chat_layout.setSpacing(8)  # iOS-quality spacing
@@ -896,10 +899,21 @@ class CosmicSidebar(QWidget):
         self.ai_worker.error_occurred.connect(self.handle_ai_error)
 
     def setup_global_hotkey(self):
-        # Note: This only works when the app has focus
-        # For true global hotkey, need to use system-level binding
-        # (handled by KDE keybinding config)
-        pass
+        """Register global hotkey to toggle sidebar."""
+        try:
+            from core.gui.hotkey_handler import GlobalHotkeyHandler
+            from core.ai_engine.config import Config
+            
+            config = Config()
+            hotkey = config.get("GUI", "hotkey", fallback="Super+Shift")
+            
+            self.hotkey_handler = GlobalHotkeyHandler(
+                callback=self.toggle_sidebar,
+                hotkey=hotkey
+            )
+            self.hotkey_handler.register()
+        except Exception as e:
+            logger.debug(f"Could not register global hotkey: {e}")
     
     def _set_sidebar_window_id(self):
         """Set the sidebar window ID for exclusion from resize operations."""
@@ -1138,27 +1152,30 @@ class CosmicSidebar(QWidget):
         if hasattr(self, 'empty_state') and self.empty_state:
             self._remove_empty_state()
         
+        # Skip empty messages
+        if not text or not text.strip():
+            logger.debug("Skipping empty message")
+            return
+        
+        logger.debug(f"Adding message: {text[:50]}... (user={is_user})")
+        
         bubble = MessageBubble(text, is_user=is_user)
         
-        # iOS-style fade-in animation for instant but smooth feel
-        bubble_opacity = QGraphicsOpacityEffect(bubble)
-        bubble.setGraphicsEffect(bubble_opacity)
-        bubble_opacity.setOpacity(0.0)
+        # Ensure bubble is visible
+        bubble.show()
+        bubble.setVisible(True)
         
-        bubble_anim = QPropertyAnimation(bubble_opacity, b"opacity")
-        bubble_anim.setDuration(150)  # Faster for instant iOS feel
-        bubble_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        bubble_anim.setStartValue(0.0)
-        bubble_anim.setEndValue(1.0)
-        
+        # Add message bubble directly
         self.chat_layout.addWidget(bubble)
         self.messages.append({"text": text, "is_user": is_user})
         
-        # Start animation immediately for instant feel
-        bubble_anim.start()  # Start immediately, no delay
+        # Force update
+        bubble.update()
+        self.chat_widget.update()
+        self.chat_scroll.update()
         
-        # Smooth scroll to bottom - instant iOS-quality
-        QTimer.singleShot(5, self._scroll_to_bottom)  # Instant scroll
+        # Smooth scroll to bottom
+        QTimer.singleShot(5, self._scroll_to_bottom)
 
     def add_loading(self):
         """Add beautiful iOS-style loading indicator with buttery smooth animation."""
@@ -1405,29 +1422,61 @@ class CosmicSidebar(QWidget):
 
 def main():
     """Run the sidebar as standalone for testing."""
-    # Check if another instance is already running
+    # Check if another instance is already running (atomic lock)
     import os
+    import fcntl
     lock_file = "/tmp/cosmic-sidebar.lock"
-    if os.path.exists(lock_file):
+    lock_fd = None
+    
+    try:
+        # Try to open/create lock file
+        lock_fd = os.open(lock_file, os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
+        
+        # Try to acquire exclusive lock (non-blocking)
         try:
-            with open(lock_file, 'r') as f:
-                old_pid = int(f.read().strip())
-            # Check if process is still running
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except IOError:
+            # Lock is held by another process
+            os.close(lock_fd)
+            # Read the PID from the lock file
             try:
-                os.kill(old_pid, 0)  # Signal 0 just checks if process exists
-                print(f"Another sidebar instance is already running (PID: {old_pid})")
+                with open(lock_file, 'r') as f:
+                    old_pid = int(f.read().strip())
+                # Check if process is still running
+                try:
+                    os.kill(old_pid, 0)  # Signal 0 just checks if process exists
+                    print(f"Another sidebar instance is already running (PID: {old_pid})")
+                    print("Use 'anos --stop' to stop it first")
+                    sys.exit(1)
+                except ProcessLookupError:
+                    # Process doesn't exist, stale lock - will be removed below
+                    pass
+            except (ValueError, IOError):
+                pass
+            
+            # Try one more time to acquire lock (in case stale lock was removed)
+            lock_fd = os.open(lock_file, os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except IOError:
+                os.close(lock_fd)
+                print("Another sidebar instance is already running")
                 print("Use 'anos --stop' to stop it first")
                 sys.exit(1)
-            except ProcessLookupError:
-                # Process doesn't exist, remove stale lock file
-                os.remove(lock_file)
-        except (ValueError, IOError):
-            # Invalid lock file, remove it
-            os.remove(lock_file)
+        
+        # Write PID to lock file
+        os.write(lock_fd, str(os.getpid()).encode())
+        os.fsync(lock_fd)  # Ensure it's written to disk
     
-    # Create lock file
-    with open(lock_file, 'w') as f:
-        f.write(str(os.getpid()))
+    except Exception as e:
+        # If lock acquisition fails for any reason, exit
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except:
+                pass
+        print(f"Failed to acquire sidebar lock: {e}")
+        sys.exit(1)
     
     try:
         app = QApplication(sys.argv)
@@ -1446,8 +1495,17 @@ def main():
         
         # Cleanup on exit
         def cleanup():
+            if lock_fd is not None:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.close(lock_fd)
+                except:
+                    pass
             if os.path.exists(lock_file):
-                os.remove(lock_file)
+                try:
+                    os.remove(lock_file)
+                except:
+                    pass
         
         import atexit
         atexit.register(cleanup)
@@ -1455,8 +1513,17 @@ def main():
         sys.exit(app.exec())
     finally:
         # Ensure lock file is removed
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+            except:
+                pass
         if os.path.exists(lock_file):
-            os.remove(lock_file)
+            try:
+                os.remove(lock_file)
+            except:
+                pass
 
 
 if __name__ == "__main__":

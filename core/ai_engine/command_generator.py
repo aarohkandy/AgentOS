@@ -1,10 +1,7 @@
 import json
 import logging
-import requests
-import subprocess
 import sys
 import re
-import threading
 from typing import Dict, Any, Optional
 
 try:
@@ -13,13 +10,59 @@ except ImportError:
     # Fallback if module not found
     SystemAccess = None
 
+try:
+    from core.ai_engine.api_client import UnifiedAPIClient, get_api_client
+except ImportError:
+    UnifiedAPIClient = None
+    get_api_client = None
+
+try:
+    from core.ai_engine.conversation_context import ConversationContext, get_conversation_context
+except ImportError:
+    ConversationContext = None
+    get_conversation_context = None
+
 logger = logging.getLogger(__name__)
 
 class CommandGenerator:
-    def __init__(self, model):
-        self.model = model
-        self._model_lock = threading.Lock()  # Thread safety for model access
+    def __init__(self, model=None, api_client: UnifiedAPIClient = None, context: ConversationContext = None, use_online_api: bool = True):
+        """
+        Initialize the command generator (online API only - no local models).
+        
+        Args:
+            model: Ignored (kept for compatibility, but not used)
+            api_client: UnifiedAPIClient for online API calls (required)
+            context: ConversationContext for maintaining conversation history (optional)
+            use_online_api: Always True - we only use online API
+        """
+        # No local models - online API only
+        self.model = None
+        self.use_online_api = True  # Always use online API
         self.system_access = SystemAccess() if SystemAccess else None  # System and internet access
+        
+        # API client for online inference (Groq/OpenRouter) - REQUIRED
+        self.api_client = api_client
+        if self.api_client is None and get_api_client is not None:
+            try:
+                self.api_client = get_api_client()
+                logger.info("Initialized UnifiedAPIClient for online inference")
+            except Exception as e:
+                logger.error(f"Failed to initialize API client: {e}", exc_info=True)
+                self.api_client = None
+                raise RuntimeError("API client is required but failed to initialize") from e
+        
+        if self.api_client is None:
+            raise RuntimeError("API client is required - cannot initialize CommandGenerator without API client")
+        
+        # Conversation context for maintaining history
+        self.context = context
+        if self.context is None and get_conversation_context is not None:
+            try:
+                self.context = get_conversation_context()
+                logger.info("Initialized ConversationContext for conversation history")
+            except Exception as e:
+                logger.warning(f"Failed to initialize conversation context: {e}")
+                self.context = None
         
         # iOS-quality response cache for instant answers
         try:
@@ -28,6 +71,7 @@ class CommandGenerator:
         except ImportError:
             logger.warning("ResponseCache not available, caching disabled")
             self.cache = None
+        
         self.system_prompt = """Fast assistant. JSON only.
 
 Simple: {"description": "answer"}
@@ -109,7 +153,7 @@ Be instant. No explanations."""
                 logger.debug(f"Cache HIT: {cache_key[:50]}")
                 return cached
         
-        logger.info(f"CommandGenerator.generate called (model available: {self.model is not None})")
+        logger.debug(f"CommandGenerator.generate called (API: {self.api_client is not None})")
         
         # First, check if this is a system/internet query (time, news, etc.)
         try:
@@ -117,7 +161,7 @@ Be instant. No explanations."""
                 system_response = self.system_access.handle_query(user_message)
                 # Check if query was handled by system access (returns dict with "description" if handled, None otherwise)
                 if system_response and system_response.get("description"):
-                    logger.info("Handled as system/internet query")
+                    logger.debug("Handled as system/internet query")
                     result = {
                         "description": system_response.get("description"),
                         "system_query": True
@@ -133,7 +177,7 @@ Be instant. No explanations."""
         # Check if this is a simple math/question that doesn't need GUI actions
         try:
             if self._is_simple_query(user_message):
-                logger.info("Handled as simple query (no GUI actions needed)")
+                logger.debug("Handled as simple query (no GUI actions needed)")
                 result = self._handle_simple_query(user_message)
                 # Cache simple queries for instant future responses
                 if result and self.cache:
@@ -149,9 +193,10 @@ Be instant. No explanations."""
             logger.debug(f"Step-by-step check failed: {e}")
             needs_steps = False
         
-        if self.model:
-            logger.info("Using local model for generation")
-            result = self._generate_with_model(user_message, needs_steps=needs_steps)
+        # Always use online API (no local models)
+        if self.api_client:
+            logger.debug("Using online API (Groq/OpenRouter) for generation")
+            result = self._generate_with_api(user_message, needs_steps=needs_steps)
             # Cache successful results for instant future responses (iOS-quality)
             if result and not result.get("error") and self.cache:
                 try:
@@ -160,30 +205,97 @@ Be instant. No explanations."""
                     logger.debug(f"Cache set failed: {e}")
             return result
         else:
-            logger.info("No local model available, using fallback")
-            # Try API fallback first
-            api_result = self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
-            # If API fallback also fails, use rule-based fallback
-            if api_result.get("needs_setup") or (api_result.get("fallback_mode") and not api_result.get("description")):
-                # Check if this is a GUI command that can be handled by rules
-                fallback_plan = self._generate_fallback_plan(user_message)
-                if fallback_plan:
-                    # Rule-based plan found, use it (it may have plan or just description)
-                    # Cache for instant future responses
-                    if self.cache:
-                        try:
-                            self.cache.set(cache_key, fallback_plan)
-                        except Exception as e:
-                            logger.debug(f"Cache set failed: {e}")
-                    return fallback_plan
-            # Cache API results too
-            if api_result and not api_result.get("error") and self.cache:
+            # API client is required - this should never happen if initialized correctly
+            logger.error("API client not available - cannot generate response")
+            # Use rule-based fallback as last resort
+            fallback_plan = self._generate_fallback_plan(user_message)
+            if fallback_plan and self.cache:
                 try:
-                    self.cache.set(cache_key, api_result)
+                    self.cache.set(cache_key, fallback_plan)
                 except Exception as e:
                     logger.debug(f"Cache set failed: {e}")
-            return api_result
+            return fallback_plan or {
+                "description": "API client not available. Please check your .env file and API keys.",
+                "error": True
+            }
     
+    def _generate_with_api(self, user_message: str, needs_steps: bool = False) -> Dict[str, Any]:
+        """
+        Generate response using online API (Groq/OpenRouter) with conversation context.
+        
+        Args:
+            user_message: The user's message
+            needs_steps: Whether the task needs step-by-step planning
+        
+        Returns:
+            Dict with the command plan or description
+        """
+        if not self.api_client:
+            return self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
+        
+        try:
+            # Build the messages with conversation context
+            if self.context:
+                # Get full conversation history
+                messages = self.context.get_context_for_request(user_message)
+                
+                # Enhance system prompt for step-by-step if needed
+                if needs_steps and messages and messages[0]["role"] == "system":
+                    messages[0]["content"] += "\n\nIMPORTANT: This is a COMPLEX task requiring multiple steps. Break it into detailed step-by-step actions."
+            else:
+                # No context, build simple messages
+                enhanced_prompt = self.system_prompt
+                if needs_steps:
+                    enhanced_prompt += "\n\nIMPORTANT: This is a COMPLEX task requiring multiple steps. Break it into detailed step-by-step actions."
+                
+                messages = [
+                    {"role": "system", "content": enhanced_prompt},
+                    {"role": "user", "content": user_message}
+                ]
+            
+            logger.debug(f"Sending request to API with {len(messages)} messages")
+            
+            # Make the API request
+            response = self.api_client.chat(messages)
+            
+            if "error" in response:
+                logger.error(f"API error: {response['error']}")
+                # Fall back to rule-based (no local models)
+                return self._generate_fallback_plan(user_message) or {
+                    "description": f"API error: {response['error']}. Please try again.",
+                    "error": True
+                }
+            
+            # Extract the response content
+            content = response.get("content", "")
+            provider = response.get("provider", "unknown")
+            model = response.get("model", "unknown")
+            
+            logger.debug(f"Got response from {provider}/{model}")
+            
+            # Parse the JSON response
+            result = self._extract_json(content)
+            
+            # Add metadata about the provider
+            if result:
+                result["_provider"] = provider
+                result["_model"] = model
+            
+            # Update conversation context with the exchange
+            if self.context and result:
+                self.context.add_user_message(user_message)
+                # Store the raw content for context, not the parsed JSON
+                self.context.add_assistant_message(content)
+            
+            return result or {"description": content, "fallback_mode": True}
+            
+        except Exception as e:
+            logger.error(f"Error generating with API: {e}", exc_info=True)
+            # Fall back to rule-based (no local models)
+            return self._generate_fallback_plan(user_message) or {
+                "description": f"Error: {str(e)}. Please try again.",
+                "error": True
+            }
     
     def _format_system_response(self, result: dict, query: str) -> str:
         """Format system/internet response for display."""
@@ -198,163 +310,14 @@ Be instant. No explanations."""
         else:
             return str(result)
 
-    def _generate_with_model(self, user_message, needs_steps=False):
-        """Generate response using local AI model with error handling and thread safety."""
-        if not self.model:
-            return self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
-        
-        # Enhance prompt for step-by-step if needed
-        enhanced_prompt = self.system_prompt
-        if needs_steps:
-            enhanced_prompt += "\n\nIMPORTANT: This is a COMPLEX task requiring multiple steps. Break it into detailed step-by-step actions. For example, 'download and run a program' needs: 1) Open browser, 2) Navigate to download URL, 3) Click download, 4) Wait for download, 5) Open terminal, 6) Run command. Each step should be a separate action in the plan."
-        else:
-            enhanced_prompt += "\n\nNOTE: This is a SIMPLE task. Provide a direct answer or single action. No need for multiple steps."
-        
-        prompt = f"{enhanced_prompt}\n\nUser Request: {user_message}\nJSON Plan:"
-        
-        # Thread-safe model access to prevent concurrent calls
-        with self._model_lock:
-            try:
-                # Log memory usage before generation
-                import psutil
-                import time
-                process = psutil.Process()
-                mem_before = process.memory_info().rss / (1024 ** 3)  # GB
-                logger.info(f"Starting generation for: '{user_message[:50]}...' (Memory before: {mem_before:.2f} GB)")
-                
-                # Validate prompt length (some models have limits)
-                if len(prompt) > 100000:  # 100K characters
-                    logger.warning(f"Prompt too long ({len(prompt)} chars), truncating")
-                    prompt = prompt[:100000]
-                
-                # Use fewer tokens for simple queries (faster responses)
-                # Simple queries don't need complex planning
-                is_simple = self._is_simple_query(user_message) or not needs_steps
-                # iOS-quality: Fast responses with optimal token count
-                max_tokens = 128 if is_simple else 512  # More tokens for complex queries, fewer for simple
-                
-                logger.debug(f"Calling model with prompt length: {len(prompt)} chars, max_tokens: {max_tokens} (simple={is_simple})")
-                
-                # Log available memory to help diagnose memory issues
-                available_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
-                total_mem_gb = psutil.virtual_memory().total / (1024 ** 3)
-                logger.info(f"System memory: {total_mem_gb:.2f} GB total, {available_mem_gb:.2f} GB available")
-                
-                # Call model with streaming disabled (we want the full response)
-                start_time = time.time()
-                logger.info("Model inference starting...")
-                
-                output = self.model(
-                    prompt,
-                    max_tokens=max_tokens,
-                    stop=["User Request:", "JSON Plan:"],
-                    echo=False
-                )
-                
-                elapsed = time.time() - start_time
-                logger.info(f"Model inference completed in {elapsed:.2f}s")
-                
-                # Log memory usage after generation
-                mem_after = process.memory_info().rss / (1024 ** 3)  # GB
-                mem_delta = mem_after - mem_before
-                logger.info(f"Generation complete in {elapsed:.2f}s (Memory after: {mem_after:.2f} GB, delta: {mem_delta:+.2f} GB)")
-                
-                if not output or 'choices' not in output or len(output['choices']) == 0:
-                    logger.error("Model returned invalid output structure")
-                    return self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
-                
-                text = output['choices'][0]['text'].strip()
-                
-                # Use robust JSON extraction
-                result = self._extract_json(text)
-                if result:
-                    return result
-                else:
-                    # Fallback to conversational response
-                    return {"description": text, "fallback_mode": True}
-                    
-            except SystemError as e:
-                # GGML crashes often manifest as SystemError
-                logger.error(f"Model crashed with SystemError (GGML assertion?): {e}", exc_info=True)
-                logger.warning("Model may be corrupted or incompatible. Falling back to API.")
-                # Mark model as potentially broken
-                self.model = None
-                return self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
-                
-            except RuntimeError as e:
-                # Runtime errors from llama-cpp-python
-                error_str = str(e).lower()
-                if "assert" in error_str or "ggml" in error_str:
-                    logger.error(f"Model crashed with RuntimeError (possible GGML issue): {e}", exc_info=True)
-                    logger.warning("Model may be corrupted or incompatible. Falling back to API.")
-                    self.model = None
-                    return self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
-                else:
-                    logger.error(f"Model RuntimeError: {e}", exc_info=True)
-                    return self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
-                    
-            except ValueError as e:
-                # Invalid parameters or model state
-                logger.error(f"Model ValueError (invalid parameters?): {e}", exc_info=True)
-                return self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
-                
-            except Exception as e:
-                # Catch-all for other exceptions - NEVER crash, always return something
-                logger.error(f"Unexpected error generating with model: {type(e).__name__}: {e}", exc_info=True)
-                return self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
-
     def _generate_with_api_fallback(self, user_message, needs_steps=False):
-        """Use alternative AI sources when local models aren't available."""
-        # Try Ollama first (common local AI server)
-        try:
-            response = requests.post(
-                "http://localhost:11434/api/generate",
-                json={
-                    "model": "llama3.2",
-                    "prompt": f"{self.system_prompt}\n\nUser Request: {user_message}\nJSON Plan:",
-                    "stream": False,
-                    "options": {"temperature": 0.7, "num_predict": 512}
-                },
-                timeout=10
-            )
-            if response.status_code == 200:
-                result = response.json()
-                text = result.get("response", "").strip()
-                if text:
-                    # Use robust JSON extraction
-                    extracted = self._extract_json(text)
-                    if extracted:
-                        return extracted
-                    # If extraction failed, treat as conversational
-                    return {"description": text, "fallback_mode": True}
-        except Exception as e:
-            logger.debug(f"Ollama API failed: {e}")
-
-        # Try ollama CLI
-        try:
-            result = subprocess.run(
-                ["ollama", "run", "llama3.2", f"{self.system_prompt}\n\nUser Request: {user_message}\nJSON Plan:"],
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
-            if result.returncode == 0 and result.stdout:
-                text = result.stdout.strip()
-                # Use robust JSON extraction
-                extracted = self._extract_json(text)
-                if extracted:
-                    return extracted
-                # If extraction failed, treat as conversational
-                return {"description": text, "fallback_mode": True}
-        except Exception as e:
-            logger.debug(f"Ollama CLI failed: {e}")
-
-        # No AI available - return message to install
-        logger.error("No AI models available. Please install models or llama-cpp-python.")
+        """Fallback when API is not available - returns error message."""
+        logger.error("API client not available - cannot generate response")
         return {
-            "description": "I need AI models to function. Please run: ./scripts/install-models.sh",
+            "description": "API client not available. Please check your .env file and ensure API keys are configured.",
             "fallback_mode": True,
-            "needs_setup": True
+            "needs_setup": True,
+            "error": True
         }
     
     def _is_simple_query(self, user_message: str) -> bool:
@@ -626,4 +589,21 @@ Be instant. No explanations."""
                 "description": description,
                 "fallback_mode": True
             }
-
+    
+    def clear_context(self):
+        """Clear the conversation context."""
+        if self.context:
+            self.context.clear()
+            logger.info("Conversation context cleared")
+    
+    def get_context_summary(self) -> Dict[str, Any]:
+        """Get a summary of the current conversation context."""
+        if self.context:
+            return self.context.get_summary()
+        return {"message": "No conversation context available"}
+    
+    def get_api_status(self) -> Dict[str, Any]:
+        """Get the status of the API client."""
+        if self.api_client:
+            return self.api_client.get_status()
+        return {"message": "No API client available", "use_online_api": self.use_online_api}

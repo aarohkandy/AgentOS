@@ -383,11 +383,21 @@ stop_all() {
     fi
     
     # Kill any remaining processes (match both venv and system python)
+    # More thorough: check for any Python process running these modules
     pkill -f "python.*core/ai_engine/main.py" 2>/dev/null && echo "  Killed remaining daemon processes"
     pkill -f "python.*core/gui/sidebar.py" 2>/dev/null && echo "  Killed remaining sidebar processes"
+    pkill -f "python3.*core/ai_engine/main.py" 2>/dev/null && echo "  Killed remaining daemon processes (python3)"
+    pkill -f "python3.*core/gui/sidebar.py" 2>/dev/null && echo "  Killed remaining sidebar processes (python3)"
+    
+    # Also kill by module path (more reliable)
+    pkill -f "core.ai_engine.main" 2>/dev/null && echo "  Killed daemon by module path"
+    pkill -f "core.gui.sidebar" 2>/dev/null && echo "  Killed sidebar by module path"
     
     # Clean up socket
     rm -f /tmp/cosmic-ai.sock
+    
+    # Clean up lock file
+    rm -f /tmp/cosmic-sidebar.lock
     
     echo "✓ ANOS stopped"
 }
@@ -458,8 +468,16 @@ start_daemon() {
     # Setup venv if not already done
     setup_venv >/dev/null 2>&1
     
-    # Auto-setup check (unless skipped)
-    if [ "$SKIP_SETUP" != "true" ]; then
+    # Check if using online API (skip local model checks if so)
+    USE_ONLINE_API=false
+    if [ -f "$PROJECT_ROOT/config/cosmic-os.conf" ]; then
+        if grep -q "^use_online_api = true" "$PROJECT_ROOT/config/cosmic-os.conf" 2>/dev/null; then
+            USE_ONLINE_API=true
+        fi
+    fi
+    
+    # Auto-setup check (unless skipped or using online API)
+    if [ "$SKIP_SETUP" != "true" ] && [ "$USE_ONLINE_API" != "true" ]; then
         # Quick check: if llama-cpp-python missing, offer to install
         PYTHON_CMD=$(get_python)
         if ! "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
@@ -467,6 +485,9 @@ start_daemon() {
             echo "   Run 'anos --setup' to install dependencies and download models."
             echo ""
         fi
+    elif [ "$USE_ONLINE_API" = "true" ]; then
+        echo "🌐 Using online API (Groq/OpenRouter) - skipping local model setup"
+        echo ""
     fi
     
     # Clear log on startup
@@ -505,12 +526,43 @@ start_daemon() {
 start_sidebar() {
     echo "Starting sidebar GUI..."
     
-    # Kill existing sidebar
+    # More aggressive cleanup - kill ALL sidebar processes
+    LOCK_FILE="/tmp/cosmic-sidebar.lock"
+    
+    # Kill by PID file
     if [ -f "$SIDEBAR_PIDFILE" ]; then
-        OLD_PID=$(cat "$SIDEBAR_PIDFILE")
-        kill "$OLD_PID" 2>/dev/null
+        OLD_PID=$(cat "$SIDEBAR_PIDFILE" 2>/dev/null)
+        if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+            kill "$OLD_PID" 2>/dev/null
+            sleep 0.2
+        fi
     fi
+    
+    # Kill by lock file
+    if [ -f "$LOCK_FILE" ]; then
+        LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+        if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+            kill "$LOCK_PID" 2>/dev/null
+            sleep 0.2
+        fi
+        rm -f "$LOCK_FILE"
+    fi
+    
+    # Kill by process name (multiple patterns to catch all)
     pkill -f "python.*core/gui/sidebar.py" 2>/dev/null
+    pkill -f "python3.*core/gui/sidebar.py" 2>/dev/null
+    pkill -f "core.gui.sidebar" 2>/dev/null
+    pkill -f "sidebar.py" 2>/dev/null
+    
+    # Wait a bit for processes to die
+    sleep 0.3
+    
+    # Double-check no sidebar is running
+    if pgrep -f "sidebar.py" > /dev/null 2>&1; then
+        echo "  ⚠ Warning: Some sidebar processes still running, killing forcefully..."
+        pkill -9 -f "sidebar.py" 2>/dev/null
+        sleep 0.2
+    fi
     
     # Check if PyQt6 is available
     PYTHON_CMD=$(get_python)
@@ -520,13 +572,28 @@ start_sidebar() {
         return 1
     fi
     
-    # Start sidebar (foreground - this will block)
+    # Verify no sidebar is running before starting
+    if pgrep -f "sidebar.py" > /dev/null 2>&1; then
+        echo "  ✗ Sidebar is already running. Use 'anos --stop' first."
+        return 1
+    fi
+    
+    # Start sidebar (background)
     "$PYTHON_CMD" "$PROJECT_ROOT/core/gui/sidebar.py" &
     SIDEBAR_PID=$!
+    
+    # Wait a moment to see if it starts successfully
+    sleep 0.5
+    
+    # Check if process is still running (started successfully)
+    if ! kill -0 "$SIDEBAR_PID" 2>/dev/null; then
+        echo "  ✗ Sidebar failed to start"
+        return 1
+    fi
+    
     echo "$SIDEBAR_PID" > "$SIDEBAR_PIDFILE"
     echo "  ✓ Sidebar started (PID: $SIDEBAR_PID)"
     
-    # Return the PID so we can wait on it
     return 0
 }
 
@@ -581,73 +648,95 @@ case "${1:-}" in
         # Setup venv first
         setup_venv 2>&1 | tee -a "$LOG_FILE"
         
-        # Auto-install llama-cpp-python if missing - MUST complete before daemon starts
-        PYTHON_CMD=$(get_python)
-        echo "Checking for llama-cpp-python..." | tee -a "$LOG_FILE"
-        if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
-            echo "✓ llama-cpp-python already installed in venv" | tee -a "$LOG_FILE"
-            echo "" | tee -a "$LOG_FILE"
-        else
-            echo "✗ llama-cpp-python NOT installed" | tee -a "$LOG_FILE"
-            echo "" | tee -a "$LOG_FILE"
-            echo "📦 Step 1/2: Installing llama-cpp-python" | tee -a "$LOG_FILE"
-            echo "   (One-time setup, takes 5-10 minutes)" | tee -a "$LOG_FILE"
-            echo "" | tee -a "$LOG_FILE"
-            
-            # Run installation and capture output
-            if check_llama_cpp 2>&1 | tee -a "$LOG_FILE"; then
-                # Wait a moment for Python to recognize the new module
-                sleep 1
-                # Verify installation worked
-                PYTHON_CMD=$(get_python)
-                if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
-                    echo "" | tee -a "$LOG_FILE"
-                    echo "✓ Verification: llama-cpp-python is now available in venv" | tee -a "$LOG_FILE"
-                else
-                    echo "" | tee -a "$LOG_FILE"
-                    echo "⚠️  Installation completed but Python can't import it yet" | tee -a "$LOG_FILE"
-                    echo "   Waiting 2 seconds and retrying..." | tee -a "$LOG_FILE"
-                    sleep 2
-                    if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
-                        echo "✓ Now working!" | tee -a "$LOG_FILE"
-                    else
-                        echo "⚠️  Still not working. Continuing anyway - may need restart." | tee -a "$LOG_FILE"
-                    fi
-                fi
-            else
-                echo "" | tee -a "$LOG_FILE"
-                echo "⚠️  Installation failed. Check errors above." | tee -a "$LOG_FILE"
-                echo "   Continuing with fallback mode..." | tee -a "$LOG_FILE"
+        # Check if using online API
+        USE_ONLINE_API=false
+        if [ -f "$PROJECT_ROOT/config/cosmic-os.conf" ]; then
+            if grep -q "^use_online_api = true" "$PROJECT_ROOT/config/cosmic-os.conf" 2>/dev/null; then
+                USE_ONLINE_API=true
             fi
-            echo "" | tee -a "$LOG_FILE"
         fi
         
-        # Check and download all 4 tier models
-        {
-        echo "📥 Step 2/2: Checking all tier models"
-        echo "   (Models should be in: $PROJECT_ROOT/models/)"
-        echo ""
-        
-        DETECTED_TIER=$(detect_tier)
-        echo "📊 Detected hardware: Tier $DETECTED_TIER (will use this model)"
-        echo ""
-        
-        for tier in 1 2 3 4 5; do
-            MODEL_FILE="$PROJECT_ROOT/models/tier$tier/model.gguf"
-            if [ -f "$MODEL_FILE" ] && [ -s "$MODEL_FILE" ]; then
-                SIZE=$(du -h "$MODEL_FILE" | cut -f1)
-                echo "✓ Tier $tier: Found ($SIZE)"
+        if [ "$USE_ONLINE_API" = "true" ]; then
+            # Using online API - skip local model setup
+            {
+            echo "🌐 Online API Mode (Groq/OpenRouter)"
+            echo "   Skipping local model setup"
+            echo ""
+            echo "🚀 Starting ANOS..."
+            echo ""
+            echo "--- Daemon logs below ---"
+            echo ""
+            } | tee -a "$LOG_FILE"
+        else
+            # Using local models - check and install
+            # Auto-install llama-cpp-python if missing - MUST complete before daemon starts
+            PYTHON_CMD=$(get_python)
+            echo "Checking for llama-cpp-python..." | tee -a "$LOG_FILE"
+            if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+                echo "✓ llama-cpp-python already installed in venv" | tee -a "$LOG_FILE"
+                echo "" | tee -a "$LOG_FILE"
             else
-                echo "✗ Tier $tier: Not found at $MODEL_FILE"
+                echo "✗ llama-cpp-python NOT installed" | tee -a "$LOG_FILE"
+                echo "" | tee -a "$LOG_FILE"
+                echo "📦 Step 1/2: Installing llama-cpp-python" | tee -a "$LOG_FILE"
+                echo "   (One-time setup, takes 5-10 minutes)" | tee -a "$LOG_FILE"
+                echo "" | tee -a "$LOG_FILE"
+                
+                # Run installation and capture output
+                if check_llama_cpp 2>&1 | tee -a "$LOG_FILE"; then
+                    # Wait a moment for Python to recognize the new module
+                    sleep 1
+                    # Verify installation worked
+                    PYTHON_CMD=$(get_python)
+                    if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+                        echo "" | tee -a "$LOG_FILE"
+                        echo "✓ Verification: llama-cpp-python is now available in venv" | tee -a "$LOG_FILE"
+                    else
+                        echo "" | tee -a "$LOG_FILE"
+                        echo "⚠️  Installation completed but Python can't import it yet" | tee -a "$LOG_FILE"
+                        echo "   Waiting 2 seconds and retrying..." | tee -a "$LOG_FILE"
+                        sleep 2
+                        if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+                            echo "✓ Now working!" | tee -a "$LOG_FILE"
+                        else
+                            echo "⚠️  Still not working. Continuing anyway - may need restart." | tee -a "$LOG_FILE"
+                        fi
+                    fi
+                else
+                    echo "" | tee -a "$LOG_FILE"
+                    echo "⚠️  Installation failed. Check errors above." | tee -a "$LOG_FILE"
+                    echo "   Continuing with fallback mode..." | tee -a "$LOG_FILE"
+                fi
+                echo "" | tee -a "$LOG_FILE"
             fi
-        done
-        
-        echo ""
-        echo "🚀 Starting ANOS..."
-        echo ""
-        echo "--- Daemon logs below ---"
-        echo ""
-        } | tee -a "$LOG_FILE"
+            
+            # Check and download all tier models
+            {
+            echo "📥 Step 2/2: Checking all tier models"
+            echo "   (Models should be in: $PROJECT_ROOT/models/)"
+            echo ""
+            
+            DETECTED_TIER=$(detect_tier)
+            echo "📊 Detected hardware: Tier $DETECTED_TIER (will use this model)"
+            echo ""
+            
+            for tier in 1 2 3 4 5; do
+                MODEL_FILE="$PROJECT_ROOT/models/tier$tier/model.gguf"
+                if [ -f "$MODEL_FILE" ] && [ -s "$MODEL_FILE" ]; then
+                    SIZE=$(du -h "$MODEL_FILE" | cut -f1)
+                    echo "✓ Tier $tier: Found ($SIZE)"
+                else
+                    echo "✗ Tier $tier: Not found at $MODEL_FILE"
+                fi
+            done
+            
+            echo ""
+            echo "🚀 Starting ANOS..."
+            echo ""
+            echo "--- Daemon logs below ---"
+            echo ""
+            } | tee -a "$LOG_FILE"
+        fi
         
         # Ensure all setup messages are fully flushed before daemon starts
         sync 2>/dev/null || true

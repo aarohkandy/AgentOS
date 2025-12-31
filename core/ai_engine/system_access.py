@@ -56,45 +56,141 @@ class SystemAccess:
             return {"success": False, "error": str(e)}
     
     def get_news(self, query: Optional[str] = None, limit: int = 5) -> Dict[str, Any]:
-        """Get news (simplified - uses web search as fallback)."""
+        """Get news using web search for real results."""
         try:
+            from core.ai_engine.web_search import get_web_search_helper
+            
+            helper = get_web_search_helper()
+            
+            # Build search query - use more specific queries for better results
             if query:
-                # Use a simple news API or web search
-                # For now, return a message about using web search
-                return {
-                    "success": True,
-                    "message": f"News search for '{query}' - use web search for detailed results",
-                    "query": query
-                }
+                search_query = f"latest news {query} 2024"
             else:
-                # General news - could integrate with news API
+                search_query = "breaking news today 2024"
+            
+            logger.debug(f"Searching for news with query: {search_query}")
+            
+            # Try instant answer first
+            instant = helper.search_instant_answer(search_query)
+            if instant:
+                answer = instant.get("answer", "")
+                source = instant.get("source", "")
+                url = instant.get("url", "")
+                
+                result_text = answer
+                if source:
+                    result_text += f" (Source: {source})"
+                if url:
+                    result_text += f"\nMore info: {url}"
+                
                 return {
                     "success": True,
-                    "message": "General news - use web search for current news",
-                    "suggestion": "Try: 'search for latest technology news'"
+                    "message": f"**Recent News{' - ' + query if query else ''}:**\n\n{result_text}",
+                    "query": query or "general",
+                    "results": result_text
                 }
+            
+            # Try HTML search for more results
+            logger.debug("Instant answer not available, trying HTML search...")
+            html_results = helper.search_html(search_query, num_results=limit)
+            if html_results and len(html_results) > 0:
+                formatted = helper.format_search_results(html_results)
+                return {
+                    "success": True,
+                    "message": f"**Recent News{' - ' + query if query else ''}:**\n\n{formatted}",
+                    "query": query or "general",
+                    "results": formatted
+                }
+            
+            # Last resort: try a simpler search
+            logger.debug("HTML search returned no results, trying simpler query...")
+            simple_query = "news" if not query else f"news {query}"
+            simple_results = helper.search_html(simple_query, num_results=3)
+            if simple_results and len(simple_results) > 0:
+                formatted = helper.format_search_results(simple_results)
+                return {
+                    "success": True,
+                    "message": f"**Recent News{' - ' + query if query else ''}:**\n\n{formatted}",
+                    "query": query or "general",
+                    "results": formatted
+                }
+            
+            # No results found - return helpful message
+            logger.warning(f"No news results found for query: {search_query}")
+            return {
+                "success": False,
+                "error": "No news results found",
+                "message": "I couldn't retrieve news at this time. This might be due to network issues or DuckDuckGo being temporarily unavailable. Please try again in a moment, or try asking for specific news topics like 'technology news' or 'sports news'."
+            }
+            
+        except ImportError:
+            # Fallback if WebSearchHelper not available
+            logger.warning("WebSearchHelper not available for news")
+            return {
+                "success": True,
+                "message": "General news - use web search for current news",
+                "suggestion": "Try: 'search for latest technology news'"
+            }
         except Exception as e:
             logger.error(f"Error getting news: {e}")
             return {"success": False, "error": str(e)}
     
     def web_search(self, query: str) -> Dict[str, Any]:
-        """Perform web search (simplified implementation)."""
+        """Perform web search using WebSearchHelper for real results."""
         try:
-            # Simple web search using DuckDuckGo or similar
-            # For now, return search results structure
-            search_url = f"https://html.duckduckgo.com/html/?q={query}"
-            response = self.session.get(search_url, timeout=10)
+            # Use the WebSearchHelper for actual search results
+            from core.ai_engine.web_search import get_web_search_helper
             
-            if response.status_code == 200:
-                # Parse results (simplified)
+            helper = get_web_search_helper()
+            
+            # Try instant answer first (fastest, most accurate)
+            instant = helper.search_instant_answer(query)
+            if instant:
+                answer = instant.get("answer", "")
+                source = instant.get("source", "")
+                url = instant.get("url", "")
+                
+                result_text = answer
+                if source:
+                    result_text += f" (Source: {source})"
+                if url:
+                    result_text += f"\nMore info: {url}"
+                
                 return {
                     "success": True,
                     "query": query,
-                    "results": f"Search completed for: {query}. Use browser for detailed results.",
-                    "url": search_url
+                    "results": result_text,
+                    "url": url
                 }
-            else:
-                return {"success": False, "error": f"Search failed with status {response.status_code}"}
+            
+            # Fall back to HTML search for more results
+            html_results = helper.search_html(query, num_results=3)
+            if html_results:
+                formatted = helper.format_search_results(html_results)
+                return {
+                    "success": True,
+                    "query": query,
+                    "results": formatted,
+                    "url": f"https://html.duckduckgo.com/html/?q={query}"
+                }
+            
+            # No results found
+            return {
+                "success": False,
+                "error": "No search results found",
+                "query": query
+            }
+            
+        except ImportError:
+            # Fallback if WebSearchHelper not available
+            logger.warning("WebSearchHelper not available, using fallback")
+            search_url = f"https://html.duckduckgo.com/html/?q={query}"
+            return {
+                "success": True,
+                "query": query,
+                "results": f"Search completed for: {query}. Use browser for detailed results.",
+                "url": search_url
+            }
         except Exception as e:
             logger.error(f"Error in web search: {e}")
             return {"success": False, "error": str(e)}
@@ -173,10 +269,12 @@ class SystemAccess:
                 news_query = None
             news_result = self.get_news(news_query)
             if news_result.get("success"):
+                # Return the actual news results
+                description = news_result.get("message") or news_result.get("results", "News information retrieved")
                 return {
                     "success": True,
                     "handled": True,
-                    "description": news_result.get("message", "News information retrieved")
+                    "description": description
                 }
             return {
                 "success": False,
@@ -194,11 +292,17 @@ class SystemAccess:
                     search_query = parts[1].strip() if len(parts) > 1 else query
                     search_result = self.web_search(search_query)
                     if search_result.get("success"):
-                        return {"description": f"Search completed for: {search_query}. {search_result.get('results', '')}"}
+                        # Return the actual search results, not just "Search completed"
+                        results = search_result.get('results', '')
+                        return {"description": results}
                     return {"description": f"Search failed: {search_result.get('error', 'Unknown error')}"}
+            
+            # Direct search query
             search_result = self.web_search(query)
             if search_result.get("success"):
-                return {"description": f"Search completed: {search_result.get('results', '')}"}
+                # Return the actual search results
+                results = search_result.get('results', '')
+                return {"description": results}
             return {"description": f"Search failed: {search_result.get('error', 'Unknown error')}"}
         
         # Default: not a system/internet query
@@ -246,16 +350,27 @@ class SystemAccess:
         
         # News queries
         if any(phrase in query_lower for phrase in ["news", "recent news", "latest news", "what's happening", "current events"]):
-            news_result = self.get_news()
+            # Extract news topic if specified
+            news_query = None
+            for phrase in ["about", "on", "for"]:
+                if phrase in query_lower:
+                    parts = query_lower.split(phrase, 1)
+                    if len(parts) > 1:
+                        news_query = parts[1].strip()
+                        break
+            
+            news_result = self.get_news(news_query)
             if news_result.get("success"):
+                # Return the actual news results
+                description = news_result.get("message") or news_result.get("results", "News information retrieved")
                 return {
-                    "description": f"**Recent News:**\n{news_result.get('message', 'News information retrieved')}",
+                    "description": description,
                     "system_query": True,
                     "internet_access": True
                 }
             else:
                 return {
-                    "description": "No internet connection available for news.",
+                    "description": news_result.get("message", "No internet connection available for news."),
                     "system_query": True
                 }
         
