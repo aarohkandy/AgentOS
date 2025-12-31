@@ -1,7 +1,7 @@
 """
 Cosmic OS AI Sidebar
 Main AI assistant interface - slides in from right side (Perplexity Comet style).
-Triggered by Super+Shift (Windows+Shift) global hotkey.
+Triggered by Ctrl+Space global hotkey.
 """
 
 import sys
@@ -14,10 +14,18 @@ import re
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
+# Import constants
+try:
+    from core.ai_engine.config import DEFAULT_SOCKET_PATH
+except ImportError:
+    # Fallback if config not available
+    DEFAULT_SOCKET_PATH = "/tmp/cosmic-ai.sock"
+
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QLineEdit, QPushButton, QLabel,
-    QScrollArea, QFrame, QSizePolicy, QGraphicsOpacityEffect
+    QScrollArea, QFrame, QSizePolicy, QGraphicsOpacityEffect,
+    QGraphicsDropShadowEffect
 )
 from PyQt6.QtCore import (
     Qt, QPropertyAnimation, QEasingCurve, QThread, 
@@ -33,50 +41,25 @@ logger = logging.getLogger(__name__)
 
 class WindowResizeManager:
     """
-    Manages screen work area when sidebar opens/closes.
-    Uses _NET_WM_STRUT to reserve screen space, making the system
-    think the available screen area is reduced. This causes maximized
-    and fullscreen windows to automatically only use the left portion.
+    Manages window resizing when sidebar opens/closes.
+    Resizes all visible windows to fit in remaining screen space.
     """
     
     def __init__(self):
-        self.xprop = shutil.which("xprop")
+        self.xdotool = shutil.which("xdotool")
+        self.original_geometries: Dict[int, Dict[str, int]] = {}
         self.sidebar_window_id: Optional[int] = None
-        self.strut_set = False
         
     def set_sidebar_window_id(self, window_id: int):
-        """Set the sidebar's window ID for setting strut property."""
+        """Set the sidebar's window ID so we can exclude it from resizing."""
         self.sidebar_window_id = window_id
     
-    def set_strut(self, sidebar_width: int, screen_height: int):
-        """
-        Set _NET_WM_STRUT property to reserve right edge of screen.
-        
-        Args:
-            sidebar_width: Width of sidebar (pixels to reserve on right)
-            screen_height: Total screen height
-        """
-        if not self.xprop or not self.sidebar_window_id:
-            logger.warning("xprop not available or sidebar window ID not set")
-            return
-        
+    def _run_xdotool(self, *args: str) -> str:
+        """Execute xdotool command and return output."""
+        if not self.xdotool:
+            return ""
         try:
-            # _NET_WM_STRUT format: left, right, top, bottom (in pixels)
-            # We want to reserve the right edge, so:
-            # left=0, right=sidebar_width, top=0, bottom=0
-            # But _NET_WM_STRUT_PARTIAL is better - it allows per-edge specification
-            # Format: left, right, top, bottom, left_start_y, left_end_y, right_start_y, right_end_y, top_start_x, top_end_x, bottom_start_x, bottom_end_x
-            
-            # Use _NET_WM_STRUT_PARTIAL for more precise control
-            # Reserve right edge from top (0) to bottom (screen_height)
-            cmd = [
-                self.xprop,
-                "-id", str(self.sidebar_window_id),
-                "-f", "_NET_WM_STRUT_PARTIAL", "32c",
-                "-set", "_NET_WM_STRUT_PARTIAL",
-                f"0, {sidebar_width}, 0, 0, 0, 0, 0, {screen_height}, 0, 0, 0, 0"
-            ]
-            
+            cmd = [self.xdotool] + list(args)
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -84,58 +67,287 @@ class WindowResizeManager:
                 check=True,
                 timeout=5
             )
-            
-            # Also set the simpler _NET_WM_STRUT for compatibility
-            cmd_simple = [
-                self.xprop,
-                "-id", str(self.sidebar_window_id),
-                "-f", "_NET_WM_STRUT", "32c",
-                "-set", "_NET_WM_STRUT",
-                f"0, {sidebar_width}, 0, 0"
-            ]
-            
-            subprocess.run(
-                cmd_simple,
+            return result.stdout.strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.debug(f"xdotool command failed: {e}")
+            return ""
+    
+    def _run_shell(self, cmd: str) -> str:
+        """Execute shell command and return output."""
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
                 capture_output=True,
                 text=True,
-                check=False,  # Don't fail if this doesn't work
+                check=True,
                 timeout=5
             )
-            
-            self.strut_set = True
-            logger.info(f"Set _NET_WM_STRUT to reserve {sidebar_width}px on right edge")
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to set _NET_WM_STRUT: {e}")
-        except Exception as e:
-            logger.error(f"Error setting strut: {e}")
+            return result.stdout.strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            logger.debug(f"Shell command failed: {e}")
+            return ""
     
-    def remove_strut(self):
-        """Remove _NET_WM_STRUT property to restore full screen area."""
-        if not self.xprop or not self.sidebar_window_id or not self.strut_set:
+    def get_all_windows(self) -> List[int]:
+        """Get list of all visible window IDs, excluding sidebar and system windows."""
+        if not self.xdotool:
+            return []
+        try:
+            output = self._run_xdotool("search", "--onlyvisible", "--name", "")
+            if not output:
+                return []
+            windows = []
+            for wid_str in output.strip().split("\n"):
+                if wid_str:
+                    try:
+                        wid = int(wid_str)
+                        # Exclude sidebar window
+                        if wid == self.sidebar_window_id:
+                            continue
+                        
+                        # Get window name to check for system windows
+                        name = self._run_xdotool("getwindowname", str(wid))
+                        if not name:
+                            continue
+                        
+                        # Exclude system windows (panels, docks, etc.)
+                        name_lower = name.lower()
+                        system_keywords = [
+                            "panel", "dock", "plasma", "kde", "latte",
+                            "desktop", "konsole", "system settings"
+                        ]
+                        # Only exclude if it's clearly a system window
+                        # (be conservative - don't exclude user windows)
+                        if any(keyword in name_lower for keyword in ["panel", "dock", "plasma panel"]):
+                            continue
+                        
+                        windows.append(wid)
+                    except ValueError:
+                        continue
+            return windows
+        except Exception as e:
+            logger.error(f"Failed to get window list: {e}")
+            return []
+    
+    def get_window_geometry(self, window_id: int) -> Optional[Dict[str, int]]:
+        """Get window geometry (x, y, width, height)."""
+        try:
+            geo_output = self._run_xdotool("getwindowgeometry", str(window_id))
+            if not geo_output:
+                return None
+            
+            x, y, width, height = 0, 0, 0, 0
+            for line in geo_output.split("\n"):
+                if "Position:" in line:
+                    match = re.search(r"Position:\s*(\d+),(\d+)", line)
+                    if match:
+                        x, y = int(match.group(1)), int(match.group(2))
+                elif "Geometry:" in line:
+                    match = re.search(r"Geometry:\s*(\d+)x(\d+)", line)
+                    if match:
+                        width, height = int(match.group(1)), int(match.group(2))
+            
+            if width > 0 and height > 0:
+                return {"x": x, "y": y, "width": width, "height": height}
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to get geometry for window {window_id}: {e}")
+            return None
+    
+    def is_window_maximized(self, window_id: int) -> bool:
+        """Check if window is maximized."""
+        try:
+            # Try using wmctrl first (more reliable)
+            output = self._run_shell(f"wmctrl -lG | grep '^{window_id:08x}'")
+            if output:
+                # wmctrl format: window_id desktop x y width height
+                parts = output.split()
+                if len(parts) >= 6:
+                    # Check if window spans most of screen (heuristic)
+                    width = int(parts[4])
+                    # Assume maximized if width > 90% of typical screen
+                    return width > 1500
+        except Exception:
+            pass
+        
+        # Fallback: check window state via xdotool
+        try:
+            state = self._run_xdotool("getwindowgeometry", "--shell", str(window_id))
+            # This is a heuristic - maximized windows typically have specific geometry
+            return False  # Conservative: assume not maximized
+        except Exception:
+            return False
+    
+    def unmaximize_window(self, window_id: int) -> bool:
+        """Unmaximize a window."""
+        try:
+            # Try wmctrl first
+            self._run_shell(f"wmctrl -i -r {window_id} -b remove,maximized_vert,maximized_horz")
+            return True
+        except Exception:
+            # Fallback: try xdotool key combo
+            try:
+                self._run_xdotool("windowactivate", str(window_id))
+                self._run_xdotool("key", "super+Down")  # Unmaximize in KDE
+                return True
+            except Exception:
+                return False
+    
+    def resize_window(self, window_id: int, width: int, height: int) -> bool:
+        """Resize a window."""
+        try:
+            self._run_xdotool("windowsize", str(window_id), str(width), str(height))
+            return True
+        except Exception:
+            return False
+    
+    def move_window(self, window_id: int, x: int, y: int) -> bool:
+        """Move a window."""
+        try:
+            self._run_xdotool("windowmove", str(window_id), str(x), str(y))
+            return True
+        except Exception:
+            return False
+    
+    def resize_windows_for_sidebar(self, sidebar_width: int, screen_width: int):
+        """
+        Resize all windows to fit in remaining space when sidebar opens.
+        
+        Args:
+            sidebar_width: Width of the sidebar
+            screen_width: Total screen width
+        """
+        if not self.xdotool:
+            logger.warning("xdotool not available, cannot resize windows")
+            return
+        
+        available_width = screen_width - sidebar_width
+        windows = self.get_all_windows()
+        
+        # Store original geometries
+        self.original_geometries = {}
+        
+        for window_id in windows:
+            geo = self.get_window_geometry(window_id)
+            if not geo:
+                continue
+            
+            # Store original geometry
+            self.original_geometries[window_id] = geo.copy()
+            
+            x = geo["x"]
+            y = geo["y"]
+            width = geo["width"]
+            height = geo["height"]
+            right_edge = x + width
+            
+            # Skip windows that are already within bounds
+            if right_edge <= available_width:
+                continue
+            
+            # Check if maximized - unmaximize first
+            if self.is_window_maximized(window_id):
+                self.unmaximize_window(window_id)
+                # Re-get geometry after unmaximizing
+                geo = self.get_window_geometry(window_id)
+                if geo:
+                    x = geo["x"]
+                    y = geo["y"]
+                    width = geo["width"]
+                    height = geo["height"]
+                    right_edge = x + width
+                    # Update stored geometry
+                    self.original_geometries[window_id] = geo.copy()
+            
+            # Calculate new width
+            if x >= available_width:
+                # Window is completely on the right side - move it left
+                new_x = max(0, available_width - width)
+                if new_x < 0:
+                    # Window is wider than available space - resize it
+                    new_width = available_width
+                    new_x = 0
+                else:
+                    new_width = width
+                self.move_window(window_id, new_x, y)
+                if new_width != width:
+                    self.resize_window(window_id, new_width, height)
+            elif right_edge > available_width:
+                # Window extends beyond - resize it
+                new_width = available_width - x
+                if new_width > 0:
+                    self.resize_window(window_id, new_width, height)
+        
+        logger.info(f"Resized {len(self.original_geometries)} windows for sidebar")
+    
+    def restore_windows(self):
+        """Restore all windows to their original geometries."""
+        if not self.original_geometries:
+            return
+        
+        for window_id, geo in self.original_geometries.items():
+            try:
+                # Restore size first
+                self.resize_window(window_id, geo["width"], geo["height"])
+                # Then restore position
+                self.move_window(window_id, geo["x"], geo["y"])
+            except Exception as e:
+                logger.debug(f"Failed to restore window {window_id}: {e}")
+        
+        logger.info(f"Restored {len(self.original_geometries)} windows")
+        self.original_geometries = {}
+    
+    def set_strut(self, width: int, height: int):
+        """
+        Set _NET_WM_STRUT and _NET_WM_STRUT_PARTIAL properties to reserve screen space for sidebar.
+        This tells the window manager to reserve space on the right side.
+        Format: left, right, top, bottom (in pixels from edges)
+        For right-side sidebar: left=0, right=width, top=0, bottom=0
+        """
+        if not self.sidebar_window_id:
+            # Window ID not set yet, skip
+            logger.debug("Cannot set strut: sidebar window ID not set")
             return
         
         try:
-            # Remove both strut properties
-            cmd = [
-                self.xprop,
-                "-id", str(self.sidebar_window_id),
-                "-remove", "_NET_WM_STRUT_PARTIAL"
-            ]
-            subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=5)
+            # Get screen dimensions for strut partial
+            screen_width = int(self._run_shell("xdotool getdisplaygeometry | cut -d' ' -f1") or "1920")
+            screen_height = int(self._run_shell("xdotool getdisplaygeometry | cut -d' ' -f2") or "1080")
             
-            cmd = [
-                self.xprop,
-                "-id", str(self.sidebar_window_id),
-                "-remove", "_NET_WM_STRUT"
-            ]
-            subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=5)
+            # _NET_WM_STRUT: left, right, top, bottom (from edges)
+            # For right-side sidebar: reserve space on the right
+            strut_value = f"0,{width},0,0"  # left, right, top, bottom
             
-            self.strut_set = False
-            logger.info("Removed _NET_WM_STRUT, restored full screen area")
+            # _NET_WM_STRUT_PARTIAL: left_start, left_end, right_start, right_end, top_start, top_end, bottom_start, bottom_end
+            # For right-side sidebar: right_start=0, right_end=height
+            strut_partial_value = f"0,0,0,{height},0,0,0,0"
             
+            # Set _NET_WM_STRUT (32-bit cardinal array)
+            cmd1 = f"xprop -id {self.sidebar_window_id} -f _NET_WM_STRUT 32c -set _NET_WM_STRUT {strut_value}"
+            self._run_shell(cmd1)
+            
+            # Set _NET_WM_STRUT_PARTIAL (32-bit cardinal array) for better compatibility
+            cmd2 = f"xprop -id {self.sidebar_window_id} -f _NET_WM_STRUT_PARTIAL 32c -set _NET_WM_STRUT_PARTIAL {strut_partial_value}"
+            self._run_shell(cmd2)
+            
+            logger.info(f"Set _NET_WM_STRUT to {strut_value} and _NET_WM_STRUT_PARTIAL to {strut_partial_value} for sidebar")
         except Exception as e:
-            logger.error(f"Error removing strut: {e}")
+            # Non-critical - window resizing will still work
+            logger.warning(f"Could not set _NET_WM_STRUT: {e}")
+    
+    def clear_strut(self):
+        """Clear the _NET_WM_STRUT and _NET_WM_STRUT_PARTIAL properties."""
+        if not self.sidebar_window_id:
+            return
+        
+        try:
+            cmd1 = f"xprop -id {self.sidebar_window_id} -remove _NET_WM_STRUT"
+            self._run_shell(cmd1)
+            cmd2 = f"xprop -id {self.sidebar_window_id} -remove _NET_WM_STRUT_PARTIAL"
+            self._run_shell(cmd2)
+            logger.info("Cleared _NET_WM_STRUT and _NET_WM_STRUT_PARTIAL for sidebar")
+        except Exception as e:
+            logger.debug(f"Could not clear _NET_WM_STRUT: {e}")
 
 
 class AIWorker(QThread):
@@ -143,9 +355,9 @@ class AIWorker(QThread):
     result_ready = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, socket_path: str = "/tmp/cosmic-ai.sock"):
+    def __init__(self, socket_path: str = None):
         super().__init__()
-        self.socket_path = socket_path
+        self.socket_path = socket_path or DEFAULT_SOCKET_PATH
         self.message = ""
 
     def set_message(self, message: str):
@@ -169,27 +381,55 @@ class AIWorker(QThread):
         # Fallback to Unix socket
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(5)  # 5 second timeout
+            sock.settimeout(120)  # Longer timeout for AI processing (model inference can take time)
             sock.connect(self.socket_path)
-            sock.sendall(self.message.encode('utf-8'))
             
+            # Send message with newline delimiter for proper protocol
+            message_bytes = self.message.encode('utf-8')
+            sock.sendall(message_bytes)
+            sock.shutdown(socket.SHUT_WR)  # Signal that we're done sending
+            
+            # Read response - server will close connection when done
             response = b""
             while True:
-                chunk = sock.recv(4096)
-                if not chunk:
+                try:
+                    chunk = sock.recv(8192)  # Larger buffer for JSON responses
+                    if not chunk:
+                        break  # Server closed connection
+                    response += chunk
+                except socket.timeout:
+                    logger.warning("Socket read timeout - response may be incomplete")
                     break
-                response += chunk
+                except Exception as e:
+                    logger.error(f"Error reading socket response: {e}")
+                    break
             
             sock.close()
             
-            result = json.loads(response.decode('utf-8'))
-            self.result_ready.emit(result)
+            if not response:
+                raise ValueError("Empty response from AI daemon")
+            
+            # Parse JSON response
+            try:
+                result = json.loads(response.decode('utf-8'))
+                self.result_ready.emit(result)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response: {e}")
+                logger.error(f"Response was: {response.decode('utf-8', errors='ignore')[:500]}")
+                self.error_occurred.emit(f"Invalid response from AI daemon: {str(e)}")
         except FileNotFoundError:
             self.error_occurred.emit("AI daemon not running. Start with: ./scripts/start-cosmic-test.sh")
         except ConnectionRefusedError:
             self.error_occurred.emit("AI daemon not responding. Check if it's running.")
+        except socket.timeout:
+            self.error_occurred.emit("AI daemon timeout - request took too long. The model may be processing.")
+        except ValueError as e:
+            self.error_occurred.emit(f"Communication error: {str(e)}")
+        except json.JSONDecodeError as e:
+            self.error_occurred.emit(f"Invalid response format: {str(e)}")
         except Exception as e:
-            self.error_occurred.emit(str(e))
+            logger.error(f"Unexpected error in AIWorker: {e}", exc_info=True)
+            self.error_occurred.emit(f"Error: {str(e)}")
 
 
 class MessageBubble(QFrame):
@@ -210,31 +450,59 @@ class MessageBubble(QFrame):
         label.setOpenExternalLinks(True)
         label.setTextFormat(Qt.TextFormat.RichText)  # Enable HTML rendering
         
-        font = QFont("Segoe UI", 11)
+        # iOS-quality typography - SF Pro Text for perfect readability
+        font = QFont("SF Pro Text", 15)
         label.setFont(font)
         
         if self.is_user:
+            # User message - Perfect iOS blue (#007AFF) with premium styling
             self.setStyleSheet("""
                 MessageBubble {
-                    background-color: #0078D4;
-                    border-radius: 12px;
-                    margin-left: 40px;
+                    background-color: #007AFF;
+                    border-radius: 20px;
+                    margin-left: 60px;
+                    margin-right: 16px;
+                    border: none;
                 }
                 QLabel {
-                    color: white;
+                    color: #FFFFFF;
+                    font-weight: 400;
+                    font-size: 15px;
+                    line-height: 1.5;
+                    background: transparent;
+                    padding: 2px;
                 }
             """)
+            # Add subtle shadow for depth (iOS-style)
+            shadow = QGraphicsDropShadowEffect()
+            shadow.setBlurRadius(8)
+            shadow.setColor(QColor(0, 122, 255, 50))
+            shadow.setOffset(0, 2)
+            self.setGraphicsEffect(shadow)
         else:
+            # AI message - Perfect iOS gray with subtle border and shadow
             self.setStyleSheet("""
                 MessageBubble {
-                    background-color: #2D2D2D;
-                    border-radius: 12px;
-                    margin-right: 40px;
+                    background-color: rgba(44, 44, 46, 0.95);
+                    border-radius: 20px;
+                    margin-right: 60px;
+                    margin-left: 16px;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
                 }
                 QLabel {
-                    color: #E0E0E0;
+                    color: #FFFFFF;
+                    font-size: 15px;
+                    line-height: 1.5;
+                    background: transparent;
+                    padding: 2px;
                 }
             """)
+            # Add subtle shadow for depth
+            shadow = QGraphicsDropShadowEffect()
+            shadow.setBlurRadius(6)
+            shadow.setColor(QColor(0, 0, 0, 30))
+            shadow.setOffset(0, 1)
+            self.setGraphicsEffect(shadow)
         
         layout.addWidget(label)
 
@@ -419,10 +687,11 @@ class CosmicSidebar(QWidget):
         # Main container with background
         self.container = QFrame(self)
         self.container.setGeometry(0, 0, self.sidebar_width, screen_geo.height())
+        # iOS-quality background
         self.container.setStyleSheet("""
             QFrame {
-                background-color: rgba(30, 30, 30, 0.95);
-                border-left: 1px solid #3D3D3D;
+                background-color: rgba(28, 28, 30, 0.95);
+                border-left: 0.5px solid rgba(60, 60, 67, 0.36);
             }
         """)
         
@@ -444,22 +713,30 @@ class CosmicSidebar(QWidget):
                 background-color: transparent;
             }
             QScrollBar:vertical {
-                background: #2D2D2D;
-                width: 8px;
-                border-radius: 4px;
+                background: transparent;
+                width: 6px;
+                border: none;
+                margin: 0;
             }
             QScrollBar::handle:vertical {
-                background: #5D5D5D;
-                border-radius: 4px;
-                min-height: 20px;
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 3px;
+                min-height: 30px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(255, 255, 255, 0.3);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
             }
         """)
         
         self.chat_widget = QWidget()
         self.chat_layout = QVBoxLayout(self.chat_widget)
         self.chat_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.chat_layout.setSpacing(12)
-        self.chat_layout.setContentsMargins(16, 16, 16, 16)
+        self.chat_layout.setSpacing(8)  # iOS-quality spacing
+        self.chat_layout.setContentsMargins(20, 20, 20, 20)  # More padding
         
         self.chat_scroll.setWidget(self.chat_widget)
         main_layout.addWidget(self.chat_scroll, 1)
@@ -470,21 +747,26 @@ class CosmicSidebar(QWidget):
 
     def _create_header(self) -> QFrame:
         header = QFrame()
-        header.setFixedHeight(56)
+        header.setFixedHeight(60)
         header.setStyleSheet("""
             QFrame {
-                background-color: #252525;
-                border-bottom: 1px solid #3D3D3D;
+                background-color: rgba(28, 28, 30, 0.95);
+                border-bottom: 0.5px solid rgba(60, 60, 67, 0.36);
             }
         """)
         
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setContentsMargins(20, 0, 20, 0)
 
-        # Title
-        title = QLabel("✨ Cosmic AI")
-        title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        title.setStyleSheet("color: #E0E0E0;")
+        # Title - iOS-quality typography
+        title = QLabel("Cosmic AI")
+        title_font = QFont("SF Pro Display", 17, QFont.Weight.DemiBold)
+        if title_font.family() != "SF Pro Display":
+            title_font = QFont("Inter", 17, QFont.Weight.DemiBold)
+        if title_font.family() != "Inter":
+            title_font = QFont("Segoe UI", 17, QFont.Weight.DemiBold)
+        title.setFont(title_font)
+        title.setStyleSheet("color: #FFFFFF; letter-spacing: -0.3px;")
         layout.addWidget(title)
         
         layout.addStretch()
@@ -528,10 +810,11 @@ class CosmicSidebar(QWidget):
         input_frame = QFrame()
         input_frame.setStyleSheet("""
             QFrame {
-                background-color: #252525;
-                border-top: 1px solid #3D3D3D;
+                background-color: rgba(28, 28, 30, 0.95);
+                border-top: 0.5px solid rgba(60, 60, 67, 0.36);
             }
         """)
+        input_frame.setFixedHeight(80)  # iOS-standard height
         
         layout = QHBoxLayout(input_frame)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -539,37 +822,48 @@ class CosmicSidebar(QWidget):
 
         self.input_field = QLineEdit()
         self.input_field.setPlaceholderText("Ask Cosmic AI...")
-        self.input_field.setFont(QFont("Segoe UI", 11))
+        # iOS-quality typography for input
+        input_font = QFont("SF Pro Text", 15)
+        if input_font.family() != "SF Pro Text":
+            input_font = QFont("Inter", 15)
+        if input_font.family() != "Inter":
+            input_font = QFont("Segoe UI", 15)
+        self.input_field.setFont(input_font)
         self.input_field.setStyleSheet("""
             QLineEdit {
-                background-color: #3D3D3D;
-                border: 1px solid #4D4D4D;
+                background-color: rgba(44, 44, 46, 0.95);
+                border: 1px solid rgba(255, 255, 255, 0.1);
                 border-radius: 20px;
-                padding: 10px 16px;
-                color: #E0E0E0;
+                padding: 14px 20px;
+                color: #F2F2F7;
+                font-size: 15px;
+                selection-background-color: #007AFF;
             }
             QLineEdit:focus {
-                border-color: #0078D4;
+                border-color: #007AFF;
+                background-color: rgba(50, 50, 52, 0.95);
             }
         """)
         self.input_field.returnPressed.connect(self.send_message)
         layout.addWidget(self.input_field, 1)
 
         send_btn = QPushButton("➤")
-        send_btn.setFixedSize(40, 40)
+        send_btn.setFixedSize(36, 36)  # Perfect circle for iOS
+        # iOS-quality send button
         send_btn.setStyleSheet("""
             QPushButton {
-                background-color: #0078D4;
+                background-color: #007AFF;
                 border: none;
-                border-radius: 20px;
+                border-radius: 18px;
                 font-size: 16px;
-                color: white;
+                color: #FFFFFF;
+                font-weight: 600;
             }
             QPushButton:hover {
-                background-color: #1084D8;
+                background-color: #0051D5;
             }
             QPushButton:pressed {
-                background-color: #006CBD;
+                background-color: #0040B3;
             }
         """)
         send_btn.clicked.connect(self.send_message)
@@ -578,9 +872,24 @@ class CosmicSidebar(QWidget):
         return input_frame
 
     def setup_animations(self):
+        """Setup smooth iOS-quality animations - buttery smooth 60fps."""
+        # Slide animation - perfect iOS timing (250ms is iOS standard)
         self.slide_anim = QPropertyAnimation(self, b"pos")
-        self.slide_anim.setDuration(200)
-        self.slide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.slide_anim.setDuration(250)  # Perfect iOS timing
+        self.slide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)  # iOS standard easing
+        # Note: PyQt6 animations run at 60fps by default, no need for setUpdateInterval
+        
+        # Opacity animation for fade effect (iOS-style)
+        try:
+            self.opacity_effect = QGraphicsOpacityEffect(self.container)
+            self.container.setGraphicsEffect(self.opacity_effect)
+            self.opacity_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+            self.opacity_anim.setDuration(250)
+            self.opacity_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        except Exception as e:
+            logger.debug(f"Could not setup opacity animation: {e}")
+            self.opacity_effect = None
+            self.opacity_anim = None
 
     def setup_connections(self):
         self.ai_worker.result_ready.connect(self.handle_ai_response)
@@ -656,129 +965,380 @@ class CosmicSidebar(QWidget):
             self.show_sidebar()
 
     def show_sidebar(self):
+        """Show sidebar with smooth iOS-quality animation."""
         if self.is_visible:
             return
         
         self.show()
         
-        # Update sidebar window ID now that window is shown
-        QTimer.singleShot(50, self._set_sidebar_window_id)
-        
         # Get screen dimensions
         screen = QApplication.primaryScreen()
         screen_geo = screen.availableGeometry()
         screen_height = screen_geo.height()
+        screen_width = screen_geo.width()
         
-        # Set strut to reserve screen space (with small delay to ensure window is ready)
-        QTimer.singleShot(100, lambda: self.window_resize_manager.set_strut(
-            self.sidebar_width,
-            screen_height
-        ))
+        # Update sidebar window ID now that window is shown
+        # Then set strut and resize windows AFTER window ID is set
+        def setup_screen_resize():
+            # Set strut to reserve screen space (requires window ID)
+            self.window_resize_manager.set_strut(
+                self.sidebar_width,
+                screen_height
+            )
+            # Resize windows to make room for sidebar
+            self.window_resize_manager.resize_windows_for_sidebar(
+                self.sidebar_width,
+                screen_width
+            )
         
+        # Set window ID first, then setup screen resize
+        QTimer.singleShot(50, self._set_sidebar_window_id)
+        QTimer.singleShot(150, setup_screen_resize)  # After window ID is set
+        
+        # Start position animation
         self.slide_anim.setStartValue(self.hidden_pos)
         self.slide_anim.setEndValue(self.shown_pos)
+        
+        # Start opacity animation (fade in) if available
+        if hasattr(self, 'opacity_effect') and self.opacity_effect and hasattr(self, 'opacity_anim') and self.opacity_anim:
+            self.opacity_effect.setOpacity(0.0)
+            self.opacity_anim.setStartValue(0.0)
+            self.opacity_anim.setEndValue(1.0)
+            self.opacity_anim.start()
+        
+        # Start slide animation
         self.slide_anim.start()
+        
         self.is_visible = True
-        self.input_field.setFocus()
+        
+        # Focus input after animation completes
+        QTimer.singleShot(300, self.input_field.setFocus)
 
     def hide_sidebar(self):
+        """Hide sidebar with smooth iOS-quality animation."""
         if not self.is_visible:
             return
         
+        self.is_visible = False
+        
+        # Start position animation
         self.slide_anim.setStartValue(self.shown_pos)
         self.slide_anim.setEndValue(self.hidden_pos)
+        
+        # Start opacity animation (fade out) if available
+        if hasattr(self, 'opacity_effect') and self.opacity_effect and hasattr(self, 'opacity_anim') and self.opacity_anim:
+            self.opacity_anim.setStartValue(1.0)
+            self.opacity_anim.setEndValue(0.0)
+            self.opacity_anim.start()
+        
+        # Start slide animation
         self.slide_anim.start()
         self.slide_anim.finished.connect(self._on_hide_complete)
-        self.is_visible = False
 
     def _on_hide_complete(self):
-        self.hide()
+        """Complete the hide process - ensure window is fully off-screen and invisible."""
+        # Disconnect animation finished signal first
         self.slide_anim.finished.disconnect(self._on_hide_complete)
         
-        # Remove strut to restore full screen area
-        self.window_resize_manager.remove_strut()
+        # Move window completely off-screen (ensure it's at hidden position with extra margin)
+        screen = QApplication.primaryScreen()
+        screen_geo = screen.availableGeometry()
+        # Move completely off-screen to the right with extra margin
+        off_screen_pos = QPoint(screen_geo.width() + 100, 0)
+        self.move(off_screen_pos)
+        
+        # Clear strut to release screen space (must happen before hide)
+        self.window_resize_manager.clear_strut()
+        
+        # Restore windows to original positions
+        self.window_resize_manager.restore_windows()
+        
+        # Hide the window completely and lower it
+        self.hide()
+        self.lower()  # Ensure it's behind other windows
 
     def send_message(self):
-        text = self.input_field.text().strip()
-        if not text:
-            return
+        """Send message to AI - iOS-quality instant responses with caching."""
+        try:
+            text = self.input_field.text().strip()
+            if not text:
+                return
+            
+            self.input_field.clear()
+            self.add_message(text, is_user=True)
+            
+            # INSTANT: Check cache first for instant responses (iOS-quality)
+            # This happens synchronously for instant feedback
+            cached_response = self._check_cache_instant(text)
+            if cached_response and not cached_response.get("cache_miss"):
+                # Instant response from cache - show immediately (no loading indicator)
+                QTimer.singleShot(10, lambda: self.handle_ai_response(cached_response))
+                return
+            
+            # Show loading indicator (only if not cached)
+            self.add_loading()
+            
+            # Send to AI with error handling
+            try:
+                self.ai_worker.set_message(text)
+                self.ai_worker.start()
+            except Exception as e:
+                logger.error(f"Error starting AI worker: {e}", exc_info=True)
+                self.remove_loading()
+                self.add_message(f"❌ Error: Failed to send message. {str(e)}", is_user=False)
+        except Exception as e:
+            logger.error(f"Critical error in send_message: {e}", exc_info=True)
+            self.remove_loading()
+            self.add_message("❌ An unexpected error occurred. Please try again.", is_user=False)
+    
+    def _check_cache_instant(self, message: str) -> Optional[dict]:
+        """Check cache for instant response - iOS-quality instant feedback."""
+        try:
+            # Try to get cached response from AI daemon
+            # This is a synchronous check for instant responses
+            socket_path = DEFAULT_SOCKET_PATH
+            if not Path(socket_path).exists():
+                return None
+            
+            # Quick cache check request
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(0.15)  # Very short timeout for instant check
+            try:
+                sock.connect(socket_path)
+                # Send cache check request (special format)
+                cache_request = f"CACHE_CHECK:{message}"
+                sock.sendall(cache_request.encode('utf-8'))
+                
+                # Try to get response (non-blocking)
+                sock.settimeout(0.1)  # Very short for instant
+                response = sock.recv(8192)  # Larger buffer for better performance
+                sock.close()
+                
+                if response:
+                    result = json.loads(response.decode('utf-8'))
+                    if result and not result.get("cache_miss") and not result.get("error"):
+                        logger.debug(f"Cache HIT: {message[:50]}")
+                        return result
+            except (socket.timeout, ConnectionRefusedError, json.JSONDecodeError, OSError):
+                # Cache miss or timeout - proceed normally
+                pass
+            finally:
+                try:
+                    sock.close()
+                except:
+                    pass
+        except Exception:
+            # Cache check failed - proceed normally
+            pass
         
-        self.input_field.clear()
-        self.add_message(text, is_user=True)
-        
-        # Show loading indicator
-        self.add_loading()
-        
-        # Send to AI
-        self.ai_worker.set_message(text)
-        self.ai_worker.start()
+        return None
 
     def add_message(self, text: str, is_user: bool = True):
+        # Remove empty state on first message
+        if hasattr(self, 'empty_state') and self.empty_state:
+            self._remove_empty_state()
+        
         bubble = MessageBubble(text, is_user=is_user)
+        
+        # iOS-style fade-in animation for instant but smooth feel
+        bubble_opacity = QGraphicsOpacityEffect(bubble)
+        bubble.setGraphicsEffect(bubble_opacity)
+        bubble_opacity.setOpacity(0.0)
+        
+        bubble_anim = QPropertyAnimation(bubble_opacity, b"opacity")
+        bubble_anim.setDuration(150)  # Faster for instant iOS feel
+        bubble_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        bubble_anim.setStartValue(0.0)
+        bubble_anim.setEndValue(1.0)
+        
         self.chat_layout.addWidget(bubble)
         self.messages.append({"text": text, "is_user": is_user})
         
-        # Scroll to bottom
-        QTimer.singleShot(50, self._scroll_to_bottom)
+        # Start animation immediately for instant feel
+        bubble_anim.start()  # Start immediately, no delay
+        
+        # Smooth scroll to bottom - instant iOS-quality
+        QTimer.singleShot(5, self._scroll_to_bottom)  # Instant scroll
 
     def add_loading(self):
-        self.loading_label = QLabel("🔄 Thinking...")
-        self.loading_label.setStyleSheet("color: #808080; padding: 8px;")
-        self.chat_layout.addWidget(self.loading_label)
-        QTimer.singleShot(50, self._scroll_to_bottom)
+        """Add beautiful iOS-style loading indicator with buttery smooth animation."""
+        loading_frame = QFrame()
+        loading_frame.setStyleSheet("""
+            QFrame {
+                background-color: rgba(42, 42, 46, 0.9);
+                border-radius: 14px;
+                border: 1px solid rgba(60, 60, 65, 0.5);
+                margin-right: 40px;
+                padding: 4px;
+            }
+        """)
+        
+        loading_layout = QHBoxLayout(loading_frame)
+        loading_layout.setContentsMargins(20, 16, 20, 16)
+        loading_layout.setSpacing(8)
+        loading_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        
+        # Beautiful animated dots with perfect timing
+        self.loading_dots = []
+        self.loading_anims = []
+        for i in range(3):
+            dot = QLabel("●")
+            dot.setStyleSheet("""
+                QLabel {
+                    color: #007AFF;
+                    font-size: 12px;
+                    font-weight: 600;
+                }
+            """)
+            dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            dot.setFixedSize(12, 12)
+            loading_layout.addWidget(dot)
+            self.loading_dots.append(dot)
+            
+            # Perfect iOS-style dot animation - smooth pulse
+            dot_opacity = QGraphicsOpacityEffect(dot)
+            dot.setGraphicsEffect(dot_opacity)
+            dot_anim = QPropertyAnimation(dot_opacity, b"opacity")
+            dot_anim.setDuration(600)  # Faster for instant feel
+            dot_anim.setStartValue(0.2)
+            dot_anim.setKeyValueAt(0.5, 1.0)
+            dot_anim.setEndValue(0.2)
+            dot_anim.setLoopCount(-1)  # Infinite smooth loop
+            # Perfect stagger for wave effect
+            QTimer.singleShot(i * 160, lambda anim=dot_anim: anim.start())
+            self.loading_anims.append(dot_anim)
+        
+        # Add "Thinking..." text
+        thinking_label = QLabel("Thinking...")
+        thinking_label.setStyleSheet("""
+            QLabel {
+                color: rgba(255, 255, 255, 0.7);
+                font-size: 13px;
+                font-weight: 500;
+            }
+        """)
+        loading_layout.addWidget(thinking_label)
+        
+        self.loading_label = loading_frame
+        self.chat_layout.addWidget(loading_frame)
+        
+        # Instant fade-in with perfect easing
+        loading_opacity = QGraphicsOpacityEffect(loading_frame)
+        loading_frame.setGraphicsEffect(loading_opacity)
+        loading_opacity.setOpacity(0.0)
+        loading_anim = QPropertyAnimation(loading_opacity, b"opacity")
+        loading_anim.setDuration(120)  # Instant iOS feel
+        loading_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        loading_anim.setStartValue(0.0)
+        loading_anim.setEndValue(1.0)
+        loading_anim.start()
+        
+        # Smooth scroll - instant
+        QTimer.singleShot(5, self._scroll_to_bottom)  # Instant scroll
 
     def remove_loading(self):
-        if hasattr(self, 'loading_label'):
+        """Remove loading indicator with smooth fade-out."""
+        if hasattr(self, 'loading_label') and self.loading_label:
+            # Stop animations first
+            if hasattr(self, 'loading_anims'):
+                for anim in self.loading_anims:
+                    anim.stop()
+                del self.loading_anims
+            # Smooth fade-out before removal
+            loading_opacity = self.loading_label.graphicsEffect()
+            if loading_opacity:
+                fade_out = QPropertyAnimation(loading_opacity, b"opacity")
+                fade_out.setDuration(100)  # Instant fade-out
+                fade_out.setStartValue(1.0)
+                fade_out.setEndValue(0.0)
+                fade_out.finished.connect(lambda: self._actually_remove_loading())
+                fade_out.start()
+            else:
+                self._actually_remove_loading()
+        else:
+            self._actually_remove_loading()
+    
+    def _actually_remove_loading(self):
+        """Actually remove loading indicator after fade-out."""
+        if hasattr(self, 'loading_dots'):
+            del self.loading_dots
+        if hasattr(self, 'loading_label') and self.loading_label:
             self.loading_label.deleteLater()
-            del self.loading_label
+            self.loading_label = None
 
     def _scroll_to_bottom(self):
+        """Smooth scroll to bottom - iOS-quality buttery smooth (60fps)."""
         scrollbar = self.chat_scroll.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        max_value = scrollbar.maximum()
+        
+        # Perfect iOS-style smooth animated scroll - instant but smooth
+        scroll_anim = QPropertyAnimation(scrollbar, b"value")
+        scroll_anim.setDuration(120)  # Faster for instant iOS feel
+        scroll_anim.setEasingCurve(QEasingCurve.Type.OutCubic)  # Perfect iOS easing
+        scroll_anim.setStartValue(scrollbar.value())
+        scroll_anim.setEndValue(max_value)
+        scroll_anim.start()
 
     def handle_ai_response(self, result: dict):
-        self.remove_loading()
-        
-        if "error" in result:
-            self.add_message(f"❌ Error: {result['error']}", is_user=False)
-            return
-        
-        # Check if it's a command plan
-        if "plan" in result and isinstance(result["plan"], list):
-            # Show plan for approval
-            desc = result.get("description", "Generated command plan")
+        """Handle AI response with comprehensive error handling - never crashes."""
+        try:
+            self.remove_loading()
             
-            # Show fallback mode indicator only for command plans (not for every message)
-            if result.get("fallback_mode") and result["plan"]:
-                # Only show once per session, or make it less intrusive
-                if not hasattr(self, '_fallback_warning_shown'):
-                    self.add_message("ℹ️ Using rule-based fallback mode. Install models for full AI: ./scripts/install-models.sh", is_user=False)
-                    self._fallback_warning_shown = True
+            if not result or not isinstance(result, dict):
+                logger.warning(f"Invalid AI response: {result}")
+                self.add_message("❌ Invalid response from AI. Please try again.", is_user=False)
+                return
             
-            self.add_message(f"📋 {desc}", is_user=False)
+            if "error" in result:
+                self.add_message(f"❌ Error: {result['error']}", is_user=False)
+                return
             
-            # Only show plan widget if there are actual actions
-            if result["plan"]:
-                plan_widget = CommandPlanWidget(result)
-                plan_widget.approved.connect(self.execute_approved_plan)
-                plan_widget.denied.connect(self.handle_plan_denied)
-                self.chat_layout.addWidget(plan_widget)
-                self.current_plan = result
+            # Check if it's a command plan
+            if "plan" in result and isinstance(result["plan"], list):
+                # Show plan for approval
+                desc = result.get("description", "Generated command plan")
+                
+                # Show fallback mode indicator only for command plans (not for every message)
+                if result.get("fallback_mode") and result["plan"]:
+                    # Only show once per session, or make it less intrusive
+                    if not hasattr(self, '_fallback_warning_shown'):
+                        self.add_message("ℹ️ Using rule-based fallback mode. Install models for full AI: ./scripts/install-models.sh", is_user=False)
+                        self._fallback_warning_shown = True
+                
+                self.add_message(f"📋 {desc}", is_user=False)
+                
+                # Only show plan widget if there are actual actions
+                if result["plan"]:
+                    plan_widget = CommandPlanWidget(result)
+                    plan_widget.approved.connect(self.execute_approved_plan)
+                    plan_widget.denied.connect(self.handle_plan_denied)
+                    self.chat_layout.addWidget(plan_widget)
+                    self.current_plan = result
+                else:
+                    # Empty plan - just show description
+                    pass
             else:
-                # Empty plan - just show description
-                pass
-        else:
-            # Regular text response (conversational messages, help text, etc.)
-            text = result.get("description", str(result))
-            # Clean up text - remove JSON artifacts and format
-            text = self._format_response_text(text)
-            self.add_message(text, is_user=False)
-        
-        QTimer.singleShot(50, self._scroll_to_bottom)
+                # Regular text response (conversational messages, help text, etc.)
+                text = result.get("description", str(result))
+                # Clean up text - remove JSON artifacts and format
+                text = self._format_response_text(text)
+                self.add_message(text, is_user=False)
+            
+            QTimer.singleShot(5, self._scroll_to_bottom)  # Instant scroll
+        except Exception as e:
+            logger.error(f"Error handling AI response: {e}", exc_info=True)
+            self.remove_loading()
+            self.add_message("❌ Error processing AI response. Please try again.", is_user=False)
 
     def handle_ai_error(self, error: str):
-        self.remove_loading()
-        self.add_message(f"❌ Connection error: {error}", is_user=False)
+        """Handle AI error with comprehensive error handling - never crashes."""
+        try:
+            self.remove_loading()
+            error_msg = str(error) if error else "Unknown error"
+            self.add_message(f"❌ Connection error: {error_msg}", is_user=False)
+        except Exception as e:
+            logger.error(f"Error in handle_ai_error: {e}", exc_info=True)
+            # Last resort - just log it
 
     def execute_approved_plan(self, plan: dict):
         self.add_message("✅ Plan approved. Executing...", is_user=False)
@@ -845,21 +1405,58 @@ class CosmicSidebar(QWidget):
 
 def main():
     """Run the sidebar as standalone for testing."""
-    app = QApplication(sys.argv)
+    # Check if another instance is already running
+    import os
+    lock_file = "/tmp/cosmic-sidebar.lock"
+    if os.path.exists(lock_file):
+        try:
+            with open(lock_file, 'r') as f:
+                old_pid = int(f.read().strip())
+            # Check if process is still running
+            try:
+                os.kill(old_pid, 0)  # Signal 0 just checks if process exists
+                print(f"Another sidebar instance is already running (PID: {old_pid})")
+                print("Use 'anos --stop' to stop it first")
+                sys.exit(1)
+            except ProcessLookupError:
+                # Process doesn't exist, remove stale lock file
+                os.remove(lock_file)
+        except (ValueError, IOError):
+            # Invalid lock file, remove it
+            os.remove(lock_file)
     
-    # Set application-wide dark theme
-    app.setStyle("Fusion")
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor(224, 224, 224))
-    palette.setColor(QPalette.ColorRole.Base, QColor(45, 45, 45))
-    palette.setColor(QPalette.ColorRole.Text, QColor(224, 224, 224))
-    app.setPalette(palette)
+    # Create lock file
+    with open(lock_file, 'w') as f:
+        f.write(str(os.getpid()))
     
-    sidebar = CosmicSidebar()
-    sidebar.show_sidebar()
-    
-    sys.exit(app.exec())
+    try:
+        app = QApplication(sys.argv)
+        
+        # Set application-wide dark theme
+        app.setStyle("Fusion")
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(224, 224, 224))
+        palette.setColor(QPalette.ColorRole.Base, QColor(45, 45, 45))
+        palette.setColor(QPalette.ColorRole.Text, QColor(224, 224, 224))
+        app.setPalette(palette)
+        
+        sidebar = CosmicSidebar()
+        sidebar.show_sidebar()
+        
+        # Cleanup on exit
+        def cleanup():
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+        
+        import atexit
+        atexit.register(cleanup)
+        
+        sys.exit(app.exec())
+    finally:
+        # Ensure lock file is removed
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
 
 
 if __name__ == "__main__":

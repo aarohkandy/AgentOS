@@ -21,13 +21,14 @@ class ModelManager:
     def _detect_tier(self):
         """
         Detect hardware tier based on RAM and GPU.
-        Tier 1: <1GB RAM - Qwen 2.5 0.5B (EXTREME Easy)
-        Tier 2: 2-4GB RAM - Llama 3.2 3B (Low)
-        Tier 3: 16-32GB RAM or 8-12GB VRAM - Phi-4 14B (Medium)
-        Tier 4: 64GB+ RAM or 40GB+ VRAM - DeepSeek-V3/Llama 3.1 70B (Very Powerful)
+        Tier 1: <1GB RAM - TinyLlama 1.1B (Easy - Super Light)
+        Tier 2: 1-4GB RAM - Qwen 2.5 0.5B (Mid - formerly Easy)
+        Tier 3: 4-16GB RAM - Llama 3.2 3B (Hard - formerly Mid)
+        Tier 4: 16GB+ RAM or 8GB+ VRAM - Llama 3.1 8B (Very Powerful - formerly Hard)
+        Tier 5: 64GB+ RAM or 40GB+ VRAM - DeepSeek-V3/Llama 3.1 70B (Frontier)
         """
         cfg_tier = self.config.get("AI", "tier", fallback="auto")
-        if cfg_tier in ["1", "2", "3", "4"]:
+        if cfg_tier in ["1", "2", "3", "4", "5"]:
             return int(cfg_tier)
             
         total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
@@ -52,15 +53,15 @@ class ModelManager:
             
         # Tier detection logic
         if total_ram_gb >= 64 or has_high_end_gpu:
-            return 5  # Very Powerful - DeepSeek-V3/Llama 3.1 70B
+            return 5  # Frontier - DeepSeek-V3/Llama 3.1 70B
         elif total_ram_gb >= 16 or gpu_vram_gb >= 8:
-            return 4  # Very Powerful - Llama 3.1 8B (formerly Hard)
+            return 4  # Very Powerful - Llama 3.1 8B (Hard)
         elif total_ram_gb >= 4 or gpu_vram_gb >= 4:
-            return 3  # Hard - Llama 3.2 3B (formerly Mid)
+            return 3  # Hard - Llama 3.2 3B (Mid)
         elif total_ram_gb >= 1:
-            return 2  # Mid - Qwen 2.5 0.5B (formerly Easy)
+            return 2  # Mid - Qwen 2.5 0.5B (Easy)
         else:
-            return 1  # Easy - TinyLlama 1.1B (super light)
+            return 1  # Easy - TinyLlama 1.1B (Super Light)
 
     def load_models(self):
         # Try to import Llama if not already available
@@ -148,13 +149,13 @@ class ModelManager:
         # Tier 2 and 1: CPU only (smaller models)
         n_gpu_layers = -1 if self.tier >= 3 else 0
         
-        # Context window based on tier - maximize for better performance
+        # Context window based on tier - optimized for each tier
         context_sizes = {
-            1: 32768,  # TinyLlama 1.1B supports large context
-            2: 32768,  # Qwen 2.5 0.5B supports large context
-            3: 8192,   # Llama 3.2 3B
-            4: 8192,   # Llama 3.1 8B
-            5: 128000  # DeepSeek-V3 supports very large context
+            1: 2048,   # TinyLlama 1.1B - Super Light Easy (NEW)
+            2: 32768,  # Qwen 2.5 0.5B - Mid (was Easy)
+            3: 8192,   # Llama 3.2 3B - Hard (was Mid)
+            4: 8192,   # Llama 3.1 8B - Hard (was old Hard)
+            5: 128000  # DeepSeek-V3/Llama 3.1 70B - Very Powerful
         }
         n_ctx = context_sizes.get(self.tier, 8192)
         
@@ -176,18 +177,23 @@ class ModelManager:
             # n_batch: batch size for prompt processing (larger = more CPU usage, more memory)
             model_size_gb = model_path.stat().st_size / (1024 ** 3)
             
+            # Calculate RAM info first (needed for batch size calculation)
+            total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+            available_ram_gb = psutil.virtual_memory().available / (1024 ** 3)
+            
             # Use maximum batch size to keep all CPU cores busy and maximize memory usage
-            n_batch = 2048  # Large batch size for maximum CPU utilization
+            # Calculate optimal batch size based on available RAM for maximum CPU usage
+            max_batch_from_ram = int((available_ram_gb * 0.8 * 1024 * 1024 * 1024) / (n_ctx * 4))  # Rough estimate
+            n_batch = max(2048, min(max_batch_from_ram, 8192))  # Between 2048 and 8192 for maximum CPU usage
             
             # use_mmap: Memory-mapped files (more efficient, allows OS to manage memory)
             use_mmap = True
             
             # use_mlock: Try to enable for better performance (allows unlimited memory usage)
             # Falls back gracefully if permissions don't allow
-            total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
             use_mlock = True  # Enable memory locking for better performance
             
-            logger.info(f"Model loading params: n_batch={n_batch}, use_mmap={use_mmap}, use_mlock={use_mlock}, total_ram={total_ram_gb:.1f}GB, model_size={model_size_gb:.2f}GB")
+            logger.info(f"Model loading params: n_batch={n_batch} (max CPU), use_mmap={use_mmap}, use_mlock={use_mlock}, total_ram={total_ram_gb:.1f}GB, available={available_ram_gb:.1f}GB, model_size={model_size_gb:.2f}GB")
             logger.info("Initializing model (this may take 30-60 seconds for a 4GB model)...")
             
             try:
@@ -229,9 +235,22 @@ class ModelManager:
                 logger.error("Model health check failed - model may be corrupted or incompatible")
                 self.main_model = None
                 logger.info("AI will use rule-based fallback.")
-        except Exception as e:
-            logger.error(f"Failed to load main model: {e}")
+        except MemoryError as e:
+            logger.error(f"Out of memory loading model: {e}", exc_info=True)
             logger.info("AI will use rule-based fallback.")
+            self.main_model = None
+        except SystemError as e:
+            logger.error(f"System error loading model (possible crash): {e}", exc_info=True)
+            logger.info("AI will use rule-based fallback.")
+            self.main_model = None
+        except RuntimeError as e:
+            logger.error(f"Runtime error loading model: {e}", exc_info=True)
+            logger.info("AI will use rule-based fallback.")
+            self.main_model = None
+        except Exception as e:
+            logger.error(f"Failed to load main model: {e}", exc_info=True)
+            logger.info("AI will use rule-based fallback.")
+            self.main_model = None
 
     def load_validators(self):
         """
@@ -279,13 +298,13 @@ class ModelManager:
             
             try:
                 logger.info(f"Loading {name} validator from {model_path}")
-                # Use more threads for validators to increase CPU utilization
+                # Use ALL threads for validators to maximize CPU utilization
                 cpu_count = psutil.cpu_count(logical=True)
                 if cpu_count is None:
                     # Fallback for containerized/restricted environments
                     cpu_count = 4
-                validator_threads = max(1, cpu_count - 1)  # Use most cores for validators too
-                validator_ctx = 1024  # Smaller context for validators
+                validator_threads = cpu_count  # Use all cores for 100% CPU utilization
+                validator_ctx = 2048  # Larger context for validators
                 
                 # Validate validator parameters
                 validator_threads, validator_ctx = self._validate_model_params(validator_threads, validator_ctx)
@@ -330,9 +349,9 @@ class ModelManager:
         Returns:
             Tuple of (validated_n_threads, validated_n_ctx)
         """
-        # Validate n_threads: must be between 1 and 32
-        # Some models have issues with very high thread counts
-        MAX_THREADS = 32
+        # Validate n_threads: must be between 1 and 128
+        # Increased limit to allow 100% CPU usage on high-core systems
+        MAX_THREADS = 128
         if n_threads < 1:
             logger.warning(f"Invalid n_threads={n_threads}, clamping to 1")
             n_threads = 1

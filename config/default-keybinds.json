@@ -4,8 +4,8 @@
     
     "global": {
         "toggle_sidebar": {
-            "keys": "Meta+Shift",
-            "description": "Toggle the AI sidebar",
+            "keys": "Super+Shift",
+            "description": "Toggle the AI sidebar (Windows+Shift)",
             "action": "cosmic.sidebar.toggle"
         },
         "quick_command": {

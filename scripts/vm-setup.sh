@@ -195,7 +195,7 @@ setup_shortcuts() {
     
     kwriteconfig5 --file kglobalshortcutsrc \
         --group "cosmic-ai" \
-        --key "toggle-sidebar" "Meta+Shift,Meta+Shift,Toggle Cosmic AI Sidebar"
+        --key "toggle-sidebar" "Super+Shift,Super+Shift,Toggle Cosmic AI Sidebar"
     
     # Create desktop entry for the sidebar
     mkdir -p "$HOME/.local/share/applications"
