@@ -11,27 +11,64 @@ class Executor:
     def execute(self, plan):
         """Execute plan with comprehensive error handling - never crashes."""
         try:
+            if not plan or not isinstance(plan, dict):
+                logger.error("Invalid plan: plan is not a dictionary")
+                return {"success": False, "error": "Invalid plan format"}
+            
             if "error" in plan:
                 return {"success": False, "error": plan["error"]}
                 
             actions = plan.get("plan", [])
             if not actions:
                 return {"success": True, "message": "No actions to execute."}
-                
-            logger.info(f"Executing plan: {plan.get('description', 'Unknown')}")
+            
+            # Check if this is a complex task that needs step-by-step execution
+            is_complex = plan.get("complex", False) or len(actions) > 5
+            
+            logger.info(f"Executing plan: {plan.get('description', 'Unknown')} ({len(actions)} steps, complex={is_complex})")
+            
+            executed_steps = 0
+            failed_steps = 0
             
             for i, step in enumerate(actions):
                 try:
+                    if not isinstance(step, dict):
+                        logger.warning(f"Step {i+1} is not a dictionary, skipping: {step}")
+                        failed_steps += 1
+                        continue
+                    
+                    # For complex tasks, log each step
+                    if is_complex:
+                        logger.info(f"Step {i+1}/{len(actions)}: {step.get('action', 'unknown')}")
+                    
                     self._execute_step(step)
+                    executed_steps += 1
+                    
+                    # Small delay between steps for complex tasks
+                    if is_complex and i < len(actions) - 1:
+                        time.sleep(0.1)
+                        
+                except KeyboardInterrupt:
+                    logger.warning("Execution interrupted by user")
+                    return {"success": False, "error": "Execution interrupted by user", "executed": executed_steps, "total": len(actions)}
                 except Exception as e:
                     logger.error(f"Step {i+1}/{len(actions)} failed: {step} - {e}", exc_info=True)
+                    failed_steps += 1
                     # Continue with next step instead of failing completely
                     logger.warning(f"Skipping failed step and continuing...")
                     continue
                     
-            return {"success": True}
+            if failed_steps > 0:
+                logger.warning(f"Execution completed with {failed_steps} failed steps out of {len(actions)} total")
+                return {"success": True, "warning": f"{failed_steps} steps failed", "executed": executed_steps, "total": len(actions)}
+            else:
+                return {"success": True, "executed": executed_steps, "total": len(actions)}
+        except KeyboardInterrupt:
+            logger.warning("Execution interrupted by user")
+            return {"success": False, "error": "Execution interrupted by user"}
         except Exception as e:
             logger.error(f"Critical error in executor: {e}", exc_info=True)
+            # Never crash - always return error response
             return {"success": False, "error": f"Execution error: {str(e)}"}
 
     def _execute_step(self, step):

@@ -22,16 +22,22 @@ class ScreenController:
         self.type_delay = 0.05
         
         # Sidebar configuration - sidebar is on the right side
+        # Always assume sidebar area is reserved to prevent overlap
         self.sidebar_width = 420  # Sidebar width in pixels
-        self.sidebar_visible = False  # Track if sidebar is visible
+        self.sidebar_visible = True  # Always assume sidebar area is reserved
         
         if config:
             self.click_delay = config.get_float("Automation", "click_delay", 0.1)
             self.type_delay = config.get_float("Automation", "type_delay", 0.05)
+            # Allow config to override sidebar width
+            sidebar_width_config = config.get_int("GUI", "sidebar_width", fallback=420)
+            if sidebar_width_config:
+                self.sidebar_width = sidebar_width_config
         
         # Get screen dimensions
         self.screen_width, self.screen_height = self._get_screen_size()
-        self.available_width = self.screen_width - self.sidebar_width  # Exclude sidebar area
+        # Always exclude sidebar area from available screen space
+        self.available_width = self.screen_width - self.sidebar_width
 
     def _run(self, args):
         if not self.xdotool:
@@ -40,10 +46,16 @@ class ScreenController:
 
         cmd = f"{self.xdotool} {args}"
         try:
-            subprocess.run(cmd, shell=True, check=True)
+            subprocess.run(cmd, shell=True, check=True, timeout=10)
             return True
         except subprocess.CalledProcessError as e:
-            logger.error(f"xdotool error: {e}")
+            logger.error(f"xdotool error: {e}", exc_info=True)
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error(f"xdotool command timed out: {args}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error in _run: {e}", exc_info=True)
             return False
 
     def _get_screen_size(self):
@@ -59,10 +71,19 @@ class ScreenController:
         return 1920, 1080
     
     def _constrain_to_available_area(self, x, y):
-        """Constrain coordinates to available screen area (excluding sidebar)."""
-        # Ensure coordinates are within available area
+        """Constrain coordinates to available screen area (excluding sidebar).
+        This ensures no actions happen in or behind the sidebar area.
+        """
+        # Ensure coordinates are within available area (never in sidebar area)
+        # Sidebar is on the right, so x must be < available_width
         x = max(0, min(x, self.available_width - 1))
         y = max(0, min(y, self.screen_height - 1))
+        
+        # Double-check: if x is in sidebar area, clamp it
+        if x >= self.available_width:
+            x = self.available_width - 1
+            logger.warning(f"Coordinate {x} was in sidebar area, clamped to {x}")
+        
         return x, y
     
     def set_sidebar_visible(self, visible):

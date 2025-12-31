@@ -1,5 +1,7 @@
 // Cosmic OS Sidebar QML
 // Alternative QML implementation for KDE Plasma integration
+// NOTE: This file is currently NOT USED - the main sidebar is implemented in Python (sidebar.py)
+// This QML version is kept for potential future KDE/QML integration
 
 import QtQuick 2.15
 import QtQuick.Controls 2.15
@@ -206,8 +208,8 @@ Window {
         
         inputField.text = ""
         
-        // TODO: Send to AI backend
-        // For now, echo response
+        // NOTE: This QML file is not currently used - see sidebar.py for the active implementation
+        // If this QML version is activated, integrate with AI backend via DBus or socket
         Qt.callLater(function() {
             messageModel.append({
                 "text": "Processing: " + text,
@@ -222,7 +224,7 @@ Window {
     
     // Global shortcut handler (needs to be connected from C++ or Python)
     Shortcut {
-        sequence: "Meta+Shift"
+        sequence: "Super+Shift"
         onActivated: toggle()
     }
 }

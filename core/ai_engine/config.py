@@ -2,6 +2,10 @@ import os
 import configparser
 from pathlib import Path
 
+# Constants
+DEFAULT_SOCKET_PATH = "/tmp/cosmic-ai.sock"
+DEFAULT_LOG_FILE = "cosmic-ai.log"
+
 class Config:
     def __init__(self, config_path="config/cosmic-os.conf"):
         self.config = configparser.ConfigParser()
@@ -23,6 +27,12 @@ class Config:
 
     def get_int(self, section, key, fallback=0):
         return self.config.getint(section, key, fallback=fallback)
+
+    def get_float(self, section, key, fallback=0.0):
+        try:
+            return self.config.getfloat(section, key, fallback=fallback)
+        except (ValueError, TypeError):
+            return fallback
 
     def get_list(self, section, key, fallback=None):
         val = self.config.get(section, key, fallback=fallback)

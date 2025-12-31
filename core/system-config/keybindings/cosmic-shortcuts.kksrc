@@ -1,9 +1,9 @@
 # Cosmic OS KDE Global Shortcuts
-# Install: kwriteconfig5 --file kglobalshortcutsrc --group cosmic-ai --key "toggle-sidebar" "Meta+Shift,Meta+Shift,Toggle Cosmic AI Sidebar"
+# Install: kwriteconfig5 --file kglobalshortcutsrc --group cosmic-ai --key "toggle-sidebar" "Super+Shift,Super+Shift,Toggle Cosmic AI Sidebar"
 
 [cosmic-ai]
 _k_friendly_name=Cosmic AI
-toggle-sidebar=Meta+Shift,Meta+Shift,Toggle Cosmic AI Sidebar
+toggle-sidebar=Super+Shift,Super+Shift,Toggle Cosmic AI Sidebar
 execute-last-plan=Ctrl+Shift+Return,none,Execute Last Plan
 cancel-execution=Ctrl+Shift+Escape,none,Cancel Execution
 take-screenshot=Ctrl+Shift+S,none,Screenshot for AI
