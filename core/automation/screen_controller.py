@@ -90,6 +90,12 @@ class ScreenController:
         """Update sidebar visibility state."""
         self.sidebar_visible = visible
     
+    def mousemove(self, x, y):
+        """Move mouse to coordinates without clicking, constrained to available area."""
+        x, y = self._constrain_to_available_area(x, y)
+        logger.debug(f"Moving mouse to {x}, {y}")
+        return self._run(f"mousemove {x} {y}")
+    
     def click(self, x, y, button=1):
         """Click at specific coordinates, constrained to available area (excluding sidebar)."""
         x, y = self._constrain_to_available_area(x, y)
@@ -150,4 +156,162 @@ class ScreenController:
     def focus_window(self, wid):
         if wid:
             self._run(f"windowactivate {wid}")
+    
+    def get_active_window(self):
+        """Get the currently active window ID."""
+        if not self.xdotool:
+            return None
+        try:
+            wid = subprocess.check_output(f"{self.xdotool} getactivewindow", shell=True).decode().strip()
+            return wid if wid else None
+        except:
+            return None
+    
+    def click_in_window(self, x: int, y: int, window_id: str, button: str = "left") -> bool:
+        """
+        Click at coordinates in a specific window without stealing focus.
+        
+        Args:
+            x, y: Coordinates relative to window (or absolute if window geometry is used)
+            window_id: Target window ID
+            button: Mouse button (left, right, middle)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.xdotool:
+            logger.warning(f"[Dry Run] Click in window {window_id} at {x}, {y}")
+            return True
+        
+        try:
+            # Get window geometry to convert relative to absolute coordinates
+            result = subprocess.run(
+                [self.xdotool, 'getwindowgeometry', str(window_id)],
+                capture_output=True,
+                text=True,
+                timeout=1
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"Could not get window geometry for {window_id}")
+                return False
+            
+            # Parse geometry to get absolute coordinates
+            # Format: "Window 12345678\n  Position: 100,200 (screen: 0)\n  Geometry: 800x600"
+            lines = result.stdout.strip().split('\n')
+            pos_line = [l for l in lines if 'Position:' in l]
+            if pos_line:
+                pos_part = pos_line[0].split('Position:')[1].strip()
+                # Extract coordinates (format: "100,200 (screen: 0)" or "100,200")
+                pos = pos_part.split('(')[0].strip()
+                wx, wy = map(int, pos.split(','))
+                abs_x = wx + x
+                abs_y = wy + y
+            else:
+                # Fallback: assume coordinates are already absolute
+                abs_x, abs_y = x, y
+            
+            # Move mouse to position and click in the window
+            # Use --window flag to click in specific window without focusing
+            button_map = {"left": "1", "right": "3", "middle": "2"}
+            button_num = button_map.get(button.lower(), "1")
+            
+            # Move mouse to absolute position
+            subprocess.run(
+                [self.xdotool, 'mousemove', str(abs_x), str(abs_y)],
+                timeout=1,
+                check=True
+            )
+            
+            # Click in the window without focusing it
+            subprocess.run(
+                [self.xdotool, 'click', '--window', str(window_id), button_num],
+                timeout=1,
+                check=True
+            )
+            
+            logger.debug(f"Clicked in window {window_id} at {abs_x}, {abs_y} (button: {button})")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout clicking in window {window_id}")
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Click in window failed: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Click in window failed: {e}", exc_info=True)
+            return False
+    
+    def type_in_window(self, text: str, window_id: str) -> bool:
+        """
+        Type text in a specific window without stealing focus.
+        
+        Args:
+            text: Text to type
+            window_id: Target window ID
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.xdotool:
+            logger.warning(f"[Dry Run] Type in window {window_id}: {text}")
+            return True
+        
+        try:
+            # Escape double quotes and special characters
+            safe_text = text.replace('"', '\\"').replace('$', '\\$')
+            
+            # Type in the window without focusing it
+            subprocess.run(
+                [self.xdotool, 'type', '--window', str(window_id), safe_text],
+                timeout=2,
+                check=True
+            )
+            
+            logger.debug(f"Typed in window {window_id}: {text[:50]}...")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout typing in window {window_id}")
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Type in window failed: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Type in window failed: {e}", exc_info=True)
+            return False
+    
+    def key_in_window(self, key: str, window_id: str) -> bool:
+        """
+        Press a keyboard key in a specific window without stealing focus.
+        
+        Args:
+            key: Key to press (e.g., "Return", "Ctrl+c", "Tab")
+            window_id: Target window ID
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.xdotool:
+            logger.warning(f"[Dry Run] Key press in window {window_id}: {key}")
+            return True
+        
+        try:
+            # Press key in the window without focusing it
+            subprocess.run(
+                [self.xdotool, 'key', '--window', str(window_id), key],
+                timeout=1,
+                check=True
+            )
+            
+            logger.debug(f"Pressed key in window {window_id}: {key}")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout pressing key in window {window_id}")
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Key press in window failed: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Key press in window failed: {e}", exc_info=True)
+            return False
 

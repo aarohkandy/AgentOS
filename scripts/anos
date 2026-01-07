@@ -34,6 +34,222 @@ VENV_PYTHON="$VENV_DIR/bin/python3"
 VENV_PIP="$VENV_DIR/bin/pip"
 
 # Functions
+check_xdotool() {
+    # Check if xdotool is installed and working
+    if ! command -v xdotool &>/dev/null; then
+        echo "⚠️  xdotool not found"
+        return 1
+    fi
+    
+    # Test version command
+    if ! xdotool --version &>/dev/null; then
+        echo "⚠️  xdotool found but --version command failed"
+        return 1
+    fi
+    
+    # Test basic click command (dry run)
+    # Note: We don't actually click, just verify the command works
+    if ! xdotool --help &>/dev/null; then
+        echo "⚠️  xdotool found but basic commands not working"
+        return 1
+    fi
+    
+    # Check if we're on X11 (xdotool requires X11)
+    if [ -n "$XDG_SESSION_TYPE" ] && [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+        echo "⚠️  Wayland detected. xdotool requires X11."
+        echo "   Please use X11 or Wayland support will be added later."
+        return 1
+    fi
+    
+    echo "✓ xdotool is installed and working"
+    return 0
+}
+
+check_and_install_dependencies() {
+    # Check and install all required dependencies automatically
+    echo "🔍 Checking dependencies..."
+    
+    # Setup venv FIRST before any checks (ensures we use venv Python)
+    setup_venv >/dev/null 2>&1
+    
+    local MISSING_DEPS=()
+    local MISSING_PYTHON=()
+    
+    # Check xdotool specifically
+    if ! check_xdotool &>/dev/null; then
+        MISSING_DEPS+=("xdotool")
+    fi
+    
+    if ! command -v python3 &>/dev/null; then
+        echo "❌ python3 not found - please install Python 3.11+"
+        return 1
+    fi
+    
+    # Check Python packages (use venv Python)
+    PYTHON_CMD=$(get_python)
+    PIP_CMD=$(get_pip)
+    
+    # Check if requirements.txt exists
+    if [ ! -f "$PROJECT_ROOT/requirements.txt" ]; then
+        echo "⚠️  requirements.txt not found at $PROJECT_ROOT/requirements.txt"
+    else
+        echo "✓ requirements.txt found"
+    fi
+    
+    # Critical packages to check (from requirements.txt)
+    declare -A CRITICAL_PACKAGES=(
+        ["google-genai"]="from google import genai"
+        ["PyQt6"]="from PyQt6.QtWidgets import QApplication"
+        ["requests"]="import requests"
+        ["psutil"]="import psutil"
+        ["python-dotenv"]="import dotenv"
+        ["Pillow"]="from PIL import Image"
+        ["dbus-python"]="import dbus"
+        ["python-xlib"]="from Xlib import display"
+        ["mss"]="import mss"
+        ["aiohttp"]="import aiohttp"
+        ["pydantic"]="import pydantic"
+    )
+    
+    # Check each critical package
+    for pkg in "${!CRITICAL_PACKAGES[@]}"; do
+        import_cmd="${CRITICAL_PACKAGES[$pkg]}"
+        if ! "$PYTHON_CMD" -c "$import_cmd" 2>/dev/null; then
+            MISSING_PYTHON+=("$pkg")
+            echo "  ✗ $pkg: missing"
+        else
+            echo "  ✓ $pkg: installed"
+        fi
+    done
+    
+    # Install missing system dependencies
+    if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
+        echo "📦 Installing system dependencies: ${MISSING_DEPS[*]}"
+        if command -v pacman &>/dev/null; then
+            sudo pacman -S --noconfirm "${MISSING_DEPS[@]}" 2>/dev/null || {
+                echo "⚠️  Could not install system dependencies automatically"
+                echo "   Please install manually: sudo pacman -S ${MISSING_DEPS[*]}"
+            }
+        elif command -v apt-get &>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y "${MISSING_DEPS[@]}" 2>/dev/null || {
+                echo "⚠️  Could not install system dependencies automatically"
+                echo "   Please install manually: sudo apt-get install ${MISSING_DEPS[*]}"
+            }
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y "${MISSING_DEPS[@]}" 2>/dev/null || {
+                echo "⚠️  Could not install system dependencies automatically"
+                echo "   Please install manually: sudo dnf install ${MISSING_DEPS[*]}"
+            }
+        else
+            echo "⚠️  Unknown package manager - please install manually: ${MISSING_DEPS[*]}"
+        fi
+    fi
+    
+    # Build executor binary (Go)
+    build_executor_binary() {
+        local GO_BINARY="$PROJECT_ROOT/core/automation/executor_binary"
+        local GO_SOURCE="$PROJECT_ROOT/core/automation/executor_binary.go"
+        
+        if [ ! -f "$GO_SOURCE" ]; then
+            echo "⚠️  Executor binary source not found: $GO_SOURCE"
+            return 1
+        fi
+        
+        # Check if binary exists and is newer than source
+        if [ -f "$GO_BINARY" ] && [ "$GO_BINARY" -nt "$GO_SOURCE" ]; then
+            echo "  ✓ Executor binary is up to date"
+            return 0
+        fi
+        
+        # Check if Go is installed
+        if ! command -v go &>/dev/null; then
+            echo "  ⚠️  Go compiler not found - executor binary will not be built"
+            echo "     Install Go: sudo pacman -S go (or equivalent for your distro)"
+            return 1
+        fi
+        
+        echo "  🔨 Building executor binary..."
+        cd "$PROJECT_ROOT/core/automation"
+        if go build -o executor_binary executor_binary.go 2>&1 | tee -a "$LOG_FILE"; then
+            chmod +x executor_binary
+            echo "  ✓ Executor binary built successfully"
+            cd "$PROJECT_ROOT"
+            return 0
+        else
+            echo "  ✗ Failed to build executor binary"
+            cd "$PROJECT_ROOT"
+            return 1
+        fi
+    }
+    
+    build_executor_binary
+    
+    # Install missing Python packages
+    if [ ${#MISSING_PYTHON[@]} -gt 0 ] || [ ! -f "$PROJECT_ROOT/.deps_installed" ]; then
+        echo "📦 Installing Python packages..."
+        
+        # Always install from requirements.txt first (ensures all packages are installed)
+        if [ -f "$PROJECT_ROOT/requirements.txt" ]; then
+            echo "   Installing all packages from requirements.txt..."
+            INSTALL_OUTPUT=$("$PIP_CMD" install -r "$PROJECT_ROOT/requirements.txt" 2>&1)
+            INSTALL_STATUS=$?
+            
+            # Show relevant output (filter out "already satisfied" messages)
+            echo "$INSTALL_OUTPUT" | grep -v "already satisfied" | grep -v "Requirement already satisfied" | grep -v "^$" || true
+            
+            if [ $INSTALL_STATUS -eq 0 ]; then
+                echo "✓ Installed packages from requirements.txt"
+                touch "$PROJECT_ROOT/.deps_installed"  # Mark as installed
+            else
+                echo "⚠️  Some packages from requirements.txt may have failed (exit code: $INSTALL_STATUS)"
+                # Still mark as attempted
+                touch "$PROJECT_ROOT/.deps_installed"
+            fi
+        fi
+        
+        # Install individual missing packages (fallback)
+        if [ ${#MISSING_PYTHON[@]} -gt 0 ]; then
+            echo "   Installing missing critical packages: ${MISSING_PYTHON[*]}"
+            for pkg in "${MISSING_PYTHON[@]}"; do
+                # Map package names to pip names
+                pip_name="$pkg"
+                case "$pkg" in
+                    "python-dotenv") pip_name="python-dotenv" ;;
+                    "dbus-python") pip_name="dbus-python" ;;
+                    "python-xlib") pip_name="python-xlib" ;;
+                esac
+                
+                echo "   Installing $pip_name..."
+                "$PIP_CMD" install "$pip_name" 2>&1 | grep -v "already satisfied" | grep -v "Requirement already satisfied" || true
+            done
+        fi
+        
+        echo "✓ Python packages installation complete"
+    fi
+    
+    # Check .env file
+    if [ ! -f "$PROJECT_ROOT/.env" ]; then
+        echo "⚠️  .env file not found - API keys needed for online mode"
+        echo "   Create $PROJECT_ROOT/.env with your Groq/OpenRouter keys"
+        echo "   Example:"
+        echo "   GROQ_KEY_1=your_key_here"
+        echo "   OPENROUTER_KEY_1=your_key_here"
+    else
+        # Check if at least one key is set
+        if ! grep -q "GROQ_KEY_1\|OPENROUTER_KEY_1" "$PROJECT_ROOT/.env" 2>/dev/null; then
+            echo "⚠️  .env file exists but no API keys found"
+        else
+            echo "✓ API keys found in .env"
+        fi
+    fi
+    
+    # Summary
+    if [ ${#MISSING_DEPS[@]} -eq 0 ] && [ ${#MISSING_PYTHON[@]} -eq 0 ]; then
+        echo "✓ All dependencies ready"
+    fi
+    echo ""
+}
+
 setup_venv() {
     # Check if venv exists
     if [ -d "$VENV_DIR" ] && [ -f "$VENV_PYTHON" ]; then
@@ -101,6 +317,7 @@ show_help() {
     echo "  --daemon     Start only the AI daemon"
     echo "  --sidebar    Start only the sidebar GUI"
     echo "  --setup      Auto-setup (install llama-cpp-python and download models)"
+    echo "  --searxng    Check/manage SearXNG search service"
     echo "  --help       Show this help"
     echo ""
 }
@@ -458,7 +675,139 @@ show_status() {
         echo "  Socket:  INACTIVE"
     fi
     
+    # Check SearXNG
+    check_searxng_status
+    
     echo ""
+}
+
+# ============================================
+# SearXNG Search Service Management
+# ============================================
+
+SEARXNG_PORT=8888
+SEARXNG_URL="http://localhost:$SEARXNG_PORT"
+
+check_searxng_status() {
+    # Check if SearXNG service is running
+    if systemctl is-active --quiet searxng 2>/dev/null; then
+        # Service is running, check if it's responding
+        if curl -s "$SEARXNG_URL/healthz" >/dev/null 2>&1 || \
+           curl -s "$SEARXNG_URL/search?q=test&format=json" >/dev/null 2>&1; then
+            echo "  SearXNG: RUNNING ($SEARXNG_URL)"
+        else
+            echo "  SearXNG: RUNNING (not responding)"
+        fi
+    elif curl -s "$SEARXNG_URL/search?q=test&format=json" >/dev/null 2>&1; then
+        # Not managed by systemd but responding
+        echo "  SearXNG: RUNNING ($SEARXNG_URL)"
+    else
+        echo "  SearXNG: NOT RUNNING (web search will use DuckDuckGo fallback)"
+    fi
+}
+
+start_searxng() {
+    echo "Starting SearXNG search service..."
+    
+    # Check if already running
+    if curl -s "$SEARXNG_URL/search?q=test&format=json" >/dev/null 2>&1; then
+        echo "  ✓ SearXNG is already running"
+        return 0
+    fi
+    
+    # Try to start via systemctl
+    if command -v systemctl &>/dev/null; then
+        if sudo systemctl start searxng 2>/dev/null; then
+            # Wait for it to be ready
+            for i in {1..15}; do
+                if curl -s "$SEARXNG_URL/search?q=test&format=json" >/dev/null 2>&1; then
+                    echo "  ✓ SearXNG started successfully"
+                    return 0
+                fi
+                sleep 1
+            done
+            echo "  ⚠ SearXNG service started but not responding"
+            return 1
+        else
+            echo "  ⚠ Could not start SearXNG service"
+            echo "    Run: sudo $PROJECT_ROOT/scripts/install-searxng.sh"
+            return 1
+        fi
+    else
+        echo "  ⚠ systemctl not available, cannot manage SearXNG"
+        return 1
+    fi
+}
+
+stop_searxng() {
+    echo "Stopping SearXNG search service..."
+    
+    if command -v systemctl &>/dev/null; then
+        if sudo systemctl stop searxng 2>/dev/null; then
+            echo "  ✓ SearXNG stopped"
+            return 0
+        fi
+    fi
+    
+    echo "  ⚠ Could not stop SearXNG (may not be running)"
+    return 1
+}
+
+restart_searxng() {
+    echo "Restarting SearXNG search service..."
+    
+    if command -v systemctl &>/dev/null; then
+        if sudo systemctl restart searxng 2>/dev/null; then
+            # Wait for it to be ready
+            for i in {1..15}; do
+                if curl -s "$SEARXNG_URL/search?q=test&format=json" >/dev/null 2>&1; then
+                    echo "  ✓ SearXNG restarted successfully"
+                    return 0
+                fi
+                sleep 1
+            done
+            echo "  ⚠ SearXNG restarted but not responding"
+            return 1
+        fi
+    fi
+    
+    echo "  ⚠ Could not restart SearXNG"
+    return 1
+}
+
+searxng_command() {
+    case "${1:-status}" in
+        start)
+            start_searxng
+            ;;
+        stop)
+            stop_searxng
+            ;;
+        restart)
+            restart_searxng
+            ;;
+        status|*)
+            echo "SearXNG Search Service Status:"
+            echo ""
+            check_searxng_status
+            echo ""
+            
+            # Show installation status
+            if command -v systemctl &>/dev/null && systemctl list-unit-files | grep -q "searxng"; then
+                echo "  Service installed: YES"
+                echo "  Service enabled:   $(systemctl is-enabled searxng 2>/dev/null || echo 'NO')"
+            else
+                echo "  Service installed: NO"
+                echo "  To install: sudo $PROJECT_ROOT/scripts/install-searxng.sh"
+            fi
+            echo ""
+            echo "Commands:"
+            echo "  anos --searxng start    Start SearXNG"
+            echo "  anos --searxng stop     Stop SearXNG"
+            echo "  anos --searxng restart  Restart SearXNG"
+            echo "  anos --searxng status   Show status (default)"
+            ;;
+    esac
 }
 
 start_daemon() {
@@ -467,6 +816,26 @@ start_daemon() {
     
     # Setup venv if not already done
     setup_venv >/dev/null 2>&1
+    
+    # CRITICAL: Ensure mss is installed before daemon starts (daemon imports it immediately)
+    PYTHON_CMD=$(get_python)
+    PIP_CMD=$(get_pip)
+    
+    # Force check and install mss - don't fail silently
+    if ! "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+        echo "📦 Installing mss before starting daemon..." >&2
+        if "$PIP_CMD" install mss 2>&1; then
+            sleep 1  # Wait for Python to recognize new module
+            # Verify it worked
+            if ! "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+                echo "⚠️  mss installation may have failed - screenshot functionality will be disabled" >&2
+            else
+                echo "✓ mss installed successfully" >&2
+            fi
+        else
+            echo "⚠️  Failed to install mss - screenshot functionality will be disabled" >&2
+        fi
+    fi
     
     # Check if using online API (skip local model checks if so)
     USE_ONLINE_API=false
@@ -490,6 +859,29 @@ start_daemon() {
         echo ""
     fi
     
+    # Check if SearXNG is configured as primary search provider
+    if grep -q "^primary_provider = searxng" "$PROJECT_ROOT/config/cosmic-os.conf" 2>/dev/null; then
+        SEARXNG_PORT=8888
+        # Try to start SearXNG if not running
+        if ! curl -s "http://localhost:$SEARXNG_PORT/healthz" >/dev/null 2>&1; then
+            echo "🔍 Starting SearXNG search service..."
+            if command -v systemctl &>/dev/null; then
+                # Check if service exists
+                if systemctl list-unit-files | grep -q searxng.service; then
+                    sudo systemctl start searxng 2>/dev/null && echo "  ✓ SearXNG started" || \
+                        echo "  ⚠ Could not start SearXNG (will use DuckDuckGo fallback)"
+                else
+                    echo "  ℹ️  SearXNG not installed (will use DuckDuckGo fallback)"
+                    echo "     To install: sudo $SCRIPT_DIR/install-searxng.sh"
+                fi
+            else
+                echo "  ℹ️  systemctl not available (will use DuckDuckGo fallback)"
+            fi
+        else
+            echo "  ✓ SearXNG is running"
+        fi
+    fi
+    
     # Clear log on startup
     > "$LOG_FILE"
     
@@ -504,7 +896,34 @@ start_daemon() {
     
     # Start daemon (output goes to both terminal and log file)
     # Use unbuffered output so logs appear immediately
+    # CRITICAL: Use the same Python that we just installed mss into
     PYTHON_CMD=$(get_python)
+    PIP_CMD=$(get_pip)
+    
+    # Final check: verify mss is available in the Python we're about to use
+    # This MUST happen before daemon starts (daemon imports mss at module load)
+    if ! "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+        echo "⚠️  WARNING: mss is not available - installing now..." >&2
+        if "$PIP_CMD" install mss 2>&1 | grep -v "already satisfied" >&2; then
+            sleep 1  # Wait for Python to recognize new module
+            if "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+                echo "✓ mss installed successfully" >&2
+            else
+                echo "⚠️  mss installation completed but import test failed" >&2
+                # Try one more time with force reinstall
+                "$PIP_CMD" install --force-reinstall mss >/dev/null 2>&1 || true
+                sleep 1
+                if "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+                    echo "✓ mss installed successfully (after force reinstall)" >&2
+                else
+                    echo "❌ mss installation failed - screenshot functionality will be disabled" >&2
+                fi
+            fi
+        else
+            echo "❌ Failed to install mss - screenshot functionality will be disabled" >&2
+        fi
+    fi
+    
     if [ "$DEBUG_FLAG" = "--debug" ]; then
         "$PYTHON_CMD" -u "$PROJECT_ROOT/core/ai_engine/main.py" 2>&1 | tee "$LOG_FILE" &
     else
@@ -533,7 +952,7 @@ start_sidebar() {
     if [ -f "$SIDEBAR_PIDFILE" ]; then
         OLD_PID=$(cat "$SIDEBAR_PIDFILE" 2>/dev/null)
         if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-            kill "$OLD_PID" 2>/dev/null
+        kill "$OLD_PID" 2>/dev/null
             sleep 0.2
         fi
     fi
@@ -623,6 +1042,10 @@ case "${1:-}" in
         start_sidebar
         exit 0
         ;;
+    --searxng)
+        searxng_command "${2:-status}"
+        exit 0
+        ;;
     --debug)
         start_daemon "--debug" "true"
         sleep 2
@@ -645,8 +1068,49 @@ case "${1:-}" in
         echo "===========================" | tee -a "$LOG_FILE"
         echo "" | tee -a "$LOG_FILE"
         
-        # Setup venv first
+        # Setup venv first (needed for dependency checks)
+        echo "📦 Setting up virtual environment..."
         setup_venv 2>&1 | tee -a "$LOG_FILE"
+        
+        # Check and install all dependencies automatically
+        echo "📦 Installing dependencies..."
+        check_and_install_dependencies 2>&1 | tee -a "$LOG_FILE"
+        
+        # CRITICAL: Install mss NOW (before daemon starts) and show output
+        PYTHON_CMD=$(get_python)
+        PIP_CMD=$(get_pip)
+        echo ""
+        echo "📦 Installing mss (required for screenshots)..." | tee -a "$LOG_FILE"
+        echo "   Using Python: $PYTHON_CMD" | tee -a "$LOG_FILE"
+        echo "   Using pip: $PIP_CMD" | tee -a "$LOG_FILE"
+        if ! "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+            echo "   Installing mss into venv..." | tee -a "$LOG_FILE"
+            # Install with visible output
+            INSTALL_OUTPUT=$("$PIP_CMD" install mss 2>&1)
+            INSTALL_STATUS=$?
+            echo "$INSTALL_OUTPUT" | grep -v "already satisfied" | grep -v "Requirement already satisfied" | tee -a "$LOG_FILE" || true
+            if [ $INSTALL_STATUS -eq 0 ]; then
+                sleep 2  # Longer wait for Python to recognize new module
+            else
+                sleep 1
+            fi
+            if "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+                echo "✓ mss installed successfully" | tee -a "$LOG_FILE"
+            else
+                echo "⚠️  mss installation may have failed - trying again..." | tee -a "$LOG_FILE"
+                "$PIP_CMD" install --force-reinstall mss 2>&1 | grep -v "already satisfied" | tee -a "$LOG_FILE" || true
+                sleep 1
+                if "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+                    echo "✓ mss installed successfully" | tee -a "$LOG_FILE"
+                else
+                    echo "❌ mss installation failed - screenshot functionality will be disabled" | tee -a "$LOG_FILE"
+                    echo "   You can install manually: $PIP_CMD install mss" | tee -a "$LOG_FILE"
+                fi
+            fi
+        else
+            echo "✓ mss is already installed" | tee -a "$LOG_FILE"
+        fi
+        echo ""
         
         # Check if using online API
         USE_ONLINE_API=false
@@ -669,78 +1133,142 @@ case "${1:-}" in
             } | tee -a "$LOG_FILE"
         else
             # Using local models - check and install
-            # Auto-install llama-cpp-python if missing - MUST complete before daemon starts
-            PYTHON_CMD=$(get_python)
-            echo "Checking for llama-cpp-python..." | tee -a "$LOG_FILE"
-            if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
-                echo "✓ llama-cpp-python already installed in venv" | tee -a "$LOG_FILE"
-                echo "" | tee -a "$LOG_FILE"
-            else
-                echo "✗ llama-cpp-python NOT installed" | tee -a "$LOG_FILE"
-                echo "" | tee -a "$LOG_FILE"
-                echo "📦 Step 1/2: Installing llama-cpp-python" | tee -a "$LOG_FILE"
-                echo "   (One-time setup, takes 5-10 minutes)" | tee -a "$LOG_FILE"
-                echo "" | tee -a "$LOG_FILE"
-                
-                # Run installation and capture output
-                if check_llama_cpp 2>&1 | tee -a "$LOG_FILE"; then
-                    # Wait a moment for Python to recognize the new module
-                    sleep 1
-                    # Verify installation worked
-                    PYTHON_CMD=$(get_python)
-                    if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
-                        echo "" | tee -a "$LOG_FILE"
-                        echo "✓ Verification: llama-cpp-python is now available in venv" | tee -a "$LOG_FILE"
-                    else
-                        echo "" | tee -a "$LOG_FILE"
-                        echo "⚠️  Installation completed but Python can't import it yet" | tee -a "$LOG_FILE"
-                        echo "   Waiting 2 seconds and retrying..." | tee -a "$LOG_FILE"
-                        sleep 2
-                        if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
-                            echo "✓ Now working!" | tee -a "$LOG_FILE"
-                        else
-                            echo "⚠️  Still not working. Continuing anyway - may need restart." | tee -a "$LOG_FILE"
-                        fi
-                    fi
+        # Auto-install llama-cpp-python if missing - MUST complete before daemon starts
+        PYTHON_CMD=$(get_python)
+        echo "Checking for llama-cpp-python..." | tee -a "$LOG_FILE"
+        if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+            echo "✓ llama-cpp-python already installed in venv" | tee -a "$LOG_FILE"
+            echo "" | tee -a "$LOG_FILE"
+        else
+            echo "✗ llama-cpp-python NOT installed" | tee -a "$LOG_FILE"
+            echo "" | tee -a "$LOG_FILE"
+            echo "📦 Step 1/2: Installing llama-cpp-python" | tee -a "$LOG_FILE"
+            echo "   (One-time setup, takes 5-10 minutes)" | tee -a "$LOG_FILE"
+            echo "" | tee -a "$LOG_FILE"
+            
+            # Run installation and capture output
+            if check_llama_cpp 2>&1 | tee -a "$LOG_FILE"; then
+                # Wait a moment for Python to recognize the new module
+                sleep 1
+                # Verify installation worked
+                PYTHON_CMD=$(get_python)
+                if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+                    echo "" | tee -a "$LOG_FILE"
+                    echo "✓ Verification: llama-cpp-python is now available in venv" | tee -a "$LOG_FILE"
                 else
                     echo "" | tee -a "$LOG_FILE"
-                    echo "⚠️  Installation failed. Check errors above." | tee -a "$LOG_FILE"
-                    echo "   Continuing with fallback mode..." | tee -a "$LOG_FILE"
+                    echo "⚠️  Installation completed but Python can't import it yet" | tee -a "$LOG_FILE"
+                    echo "   Waiting 2 seconds and retrying..." | tee -a "$LOG_FILE"
+                    sleep 2
+                    if "$PYTHON_CMD" -c "from llama_cpp import Llama" 2>/dev/null; then
+                        echo "✓ Now working!" | tee -a "$LOG_FILE"
+                    else
+                        echo "⚠️  Still not working. Continuing anyway - may need restart." | tee -a "$LOG_FILE"
+                    fi
                 fi
+            else
                 echo "" | tee -a "$LOG_FILE"
+                echo "⚠️  Installation failed. Check errors above." | tee -a "$LOG_FILE"
+                echo "   Continuing with fallback mode..." | tee -a "$LOG_FILE"
             fi
-            
+            echo "" | tee -a "$LOG_FILE"
+        fi
+        
             # Check and download all tier models
-            {
-            echo "📥 Step 2/2: Checking all tier models"
-            echo "   (Models should be in: $PROJECT_ROOT/models/)"
-            echo ""
+        {
+        echo "📥 Step 2/2: Checking all tier models"
+        echo "   (Models should be in: $PROJECT_ROOT/models/)"
+        echo ""
+        
+        DETECTED_TIER=$(detect_tier)
+        echo "📊 Detected hardware: Tier $DETECTED_TIER (will use this model)"
+        echo ""
+        
+        for tier in 1 2 3 4 5; do
+            MODEL_FILE="$PROJECT_ROOT/models/tier$tier/model.gguf"
+            if [ -f "$MODEL_FILE" ] && [ -s "$MODEL_FILE" ]; then
+                SIZE=$(du -h "$MODEL_FILE" | cut -f1)
+                echo "✓ Tier $tier: Found ($SIZE)"
+            else
+                echo "✗ Tier $tier: Not found at $MODEL_FILE"
+            fi
+        done
+        
+        echo ""
+        echo "🚀 Starting ANOS..."
+        echo ""
+        echo "--- Daemon logs below ---"
+        echo ""
+        } | tee -a "$LOG_FILE"
+        fi
+        
+        # Final verification: ensure critical packages are installed (using venv Python)
+        PYTHON_CMD=$(get_python)
+        PIP_CMD=$(get_pip)
+        echo "🔍 Final dependency verification..." | tee -a "$LOG_FILE"
+        echo "   Using Python: $PYTHON_CMD" | tee -a "$LOG_FILE"
+        echo "   Using pip: $PIP_CMD" | tee -a "$LOG_FILE"
+        
+        # CRITICAL: Ensure mss is installed BEFORE daemon starts (daemon imports it immediately)
+        # Force install mss even if it was supposedly installed earlier
+        echo "📦 Ensuring mss is installed..." | tee -a "$LOG_FILE"
+        echo "   Using Python: $PYTHON_CMD" | tee -a "$LOG_FILE"
+        echo "   Using pip: $PIP_CMD" | tee -a "$LOG_FILE"
+        
+        # Check if mss is already installed
+        if "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+            echo "✓ mss is already installed" | tee -a "$LOG_FILE"
+        else
+            echo "   mss not found, installing now..." | tee -a "$LOG_FILE"
+            # Install mss and show output (filter out "already satisfied" noise)
+            INSTALL_OUTPUT=$("$PIP_CMD" install mss 2>&1)
+            INSTALL_STATUS=$?
             
-            DETECTED_TIER=$(detect_tier)
-            echo "📊 Detected hardware: Tier $DETECTED_TIER (will use this model)"
-            echo ""
+            # Show relevant output
+            echo "$INSTALL_OUTPUT" | grep -v "already satisfied" | grep -v "Requirement already satisfied" | tee -a "$LOG_FILE" || true
             
-            for tier in 1 2 3 4 5; do
-                MODEL_FILE="$PROJECT_ROOT/models/tier$tier/model.gguf"
-                if [ -f "$MODEL_FILE" ] && [ -s "$MODEL_FILE" ]; then
-                    SIZE=$(du -h "$MODEL_FILE" | cut -f1)
-                    echo "✓ Tier $tier: Found ($SIZE)"
+            if [ $INSTALL_STATUS -eq 0 ]; then
+                sleep 1  # Wait for Python to recognize new module
+                # Verify it worked
+                if "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+                    echo "✓ mss installed and verified" | tee -a "$LOG_FILE"
                 else
-                    echo "✗ Tier $tier: Not found at $MODEL_FILE"
+                    echo "⚠️  mss installation completed but import test failed - trying force reinstall..." | tee -a "$LOG_FILE"
+                    "$PIP_CMD" install --force-reinstall --no-cache-dir mss 2>&1 | grep -v "already satisfied" | tee -a "$LOG_FILE" || true
+                    sleep 1
+                    if "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+                        echo "✓ mss installed successfully after force reinstall" | tee -a "$LOG_FILE"
+                    else
+                        echo "❌ mss installation failed - screenshot functionality will be disabled" | tee -a "$LOG_FILE"
+                        echo "   You can install manually: $PIP_CMD install mss" | tee -a "$LOG_FILE"
+                    fi
                 fi
-            done
-            
-            echo ""
-            echo "🚀 Starting ANOS..."
-            echo ""
-            echo "--- Daemon logs below ---"
-            echo ""
-            } | tee -a "$LOG_FILE"
+            else
+                echo "❌ mss installation failed (exit code: $INSTALL_STATUS)" | tee -a "$LOG_FILE"
+                echo "   You can install manually: $PIP_CMD install mss" | tee -a "$LOG_FILE"
+            fi
         fi
         
         # Ensure all setup messages are fully flushed before daemon starts
         sync 2>/dev/null || true
-        sleep 0.5
+        
+        # FINAL CHECK: Verify mss is actually available before starting daemon
+        PYTHON_CMD=$(get_python)
+        echo "🔍 Final mss verification before daemon start..." | tee -a "$LOG_FILE"
+        if ! "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+            echo "⚠️  WARNING: mss is still not available - attempting final installation..." | tee -a "$LOG_FILE"
+            PIP_CMD=$(get_pip)
+            "$PIP_CMD" install mss 2>&1 | grep -v "already satisfied" | tee -a "$LOG_FILE" || true
+            sleep 1
+            if "$PYTHON_CMD" -c "import mss" 2>/dev/null; then
+                echo "✓ mss installed successfully (final check)" | tee -a "$LOG_FILE"
+            else
+                echo "❌ mss installation failed - screenshot functionality will be disabled" | tee -a "$LOG_FILE"
+            fi
+        else
+            echo "✓ mss verified and ready" | tee -a "$LOG_FILE"
+        fi
+        echo ""
         
         # Start daemon (logs will appear in terminal)
         start_daemon "" "true"

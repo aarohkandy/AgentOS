@@ -72,12 +72,89 @@ class CommandGenerator:
             logger.warning("ResponseCache not available, caching disabled")
             self.cache = None
         
+        # Store last search results for citation mapping
+        self._last_search_results = None
+        
+        # Cache for AI-based search detection (query -> bool)
+        self._ai_search_cache = {}
+        
+        # System prompt is now handled by ConversationContext with personality support
+        # This is kept as a fallback if context is not available
         self.system_prompt = """Fast assistant. JSON only.
 
-Simple: {"description": "answer"}
-GUI: {"plan": [{"action": "click", "location": [x,y]}, {"action": "type", "text": "text"}, {"action": "key", "key": "Return"}, {"action": "wait", "seconds": 0.5}], "description": "brief", "estimated_time": N}
+Simple questions: {"description": "answer"}
+Computer control tasks: {"plan": [{"action": "click", "location": [x,y]}, {"action": "type", "text": "text"}, {"action": "key", "key": "Return"}, {"action": "wait", "seconds": 0.5}], "description": "brief", "estimated_time": N}
+
+WHEN TO CREATE A PLAN:
+- User asks to open/launch/start an application → CREATE PLAN with click/type/key actions
+- User asks to click something, type something, press keys → CREATE PLAN
+- User asks to control the computer in any way → CREATE PLAN
+- User asks to navigate, search, interact with GUI → CREATE PLAN
+- User asks a question (not a command) → Just {"description": "answer"}
+
+CRITICAL WEB SEARCH RULES:
+- If web search results with content are provided (marked with [Current Information from Web Search]), READ THE CONTENT and provide a direct answer
+- DO NOT just list URLs or links - synthesize information from the content provided
+- Extract key facts from the search result content and give a clear, direct answer to the user's question
+- ONLY claim you performed a web search if results are provided in the user's message
+- If NO web search results are provided, DO NOT claim you did a web search - be honest that you're using your training data
+- If a note says "web search was attempted but no results", be honest about your knowledge limitations
+- DO NOT fabricate or make up current information - only use what's provided in web search results
 
 Be instant. No explanations."""
+
+    def _extract_and_map_citations(self, result: Dict[str, Any], content: str, search_results_text: str, search_results_data: list = None) -> Dict[str, Any]:
+        """
+        Extract citations from response and map them to source URLs.
+        
+        Args:
+            result: Parsed JSON result
+            content: Raw response content
+            search_results_text: Formatted search results string
+            search_results_data: Raw search results list (optional, for better source extraction)
+            
+        Returns:
+            Result dict with sources added
+        """
+        # Extract citation numbers from content (e.g., [1], [2], [3])
+        citation_pattern = r'\[(\d+)\]'
+        citations = re.findall(citation_pattern, content)
+        
+        if not citations:
+            return result
+        
+        sources = []
+        source_map = {}
+        
+        # Try to use raw search results data first (more reliable)
+        if search_results_data:
+            for i, result_item in enumerate(search_results_data, 1):
+                url = result_item.get('url', '')
+                title = result_item.get('title', f'Source {i}')
+                source_map[i] = {"url": url, "title": title, "index": i}
+        else:
+            # Fall back to parsing formatted search results text
+            source_pattern = r'Source (\d+):\s*([^\n]+)\nURL:\s*([^\n]+)'
+            source_matches = re.findall(source_pattern, search_results_text)
+            
+            # Build sources list with index mapping
+            for match in source_matches:
+                index = int(match[0])
+                title = match[1].strip()
+                url = match[2].strip()
+                source_map[index] = {"url": url, "title": title, "index": index}
+        
+        # Add sources that were cited
+        cited_indices = set(int(c) for c in citations if c.isdigit())
+        for idx in cited_indices:
+            if idx in source_map:
+                sources.append(source_map[idx])
+        
+        # Add sources to result
+        if sources:
+            result["sources"] = sources
+        
+        return result
 
     def _extract_json(self, text):
         """
@@ -143,48 +220,9 @@ Be instant. No explanations."""
         if not isinstance(user_message, str):
             user_message = str(user_message)
         
-        # Normalize for cache lookup (strip whitespace, lowercase)
-        cache_key = user_message.strip().lower()
+        logger.info(f"📝 Generating response for: {user_message[:50]}...")
         
-        # INSTANT: Check cache first for instant responses
-        if self.cache:
-            cached = self.cache.get(cache_key)
-            if cached:
-                logger.debug(f"Cache HIT: {cache_key[:50]}")
-                return cached
-        
-        logger.debug(f"CommandGenerator.generate called (API: {self.api_client is not None})")
-        
-        # First, check if this is a system/internet query (time, news, etc.)
-        try:
-            if self.system_access:
-                system_response = self.system_access.handle_query(user_message)
-                # Check if query was handled by system access (returns dict with "description" if handled, None otherwise)
-                if system_response and system_response.get("description"):
-                    logger.debug("Handled as system/internet query")
-                    result = {
-                        "description": system_response.get("description"),
-                        "system_query": True
-                    }
-                    # Cache system queries for instant future responses
-                    if self.cache:
-                        self.cache.set(cache_key, result)
-                    return result
-        except Exception as e:
-            logger.debug(f"System access check failed: {e}")
-            # Fall through to model generation
-        
-        # Check if this is a simple math/question that doesn't need GUI actions
-        try:
-            if self._is_simple_query(user_message):
-                logger.debug("Handled as simple query (no GUI actions needed)")
-                result = self._handle_simple_query(user_message)
-                # Cache simple queries for instant future responses
-                if result and self.cache:
-                    self.cache.set(cache_key, result)
-                return result
-        except Exception as e:
-            logger.debug(f"Simple query check failed: {e}")
+        # All queries go through AI - no pre-coded responses, no cache checking
         
         # For complex tasks, check if step-by-step planning is needed
         try:
@@ -193,39 +231,27 @@ Be instant. No explanations."""
             logger.debug(f"Step-by-step check failed: {e}")
             needs_steps = False
         
-        # Always use online API (no local models)
+            # Always use online API (no local models)
         if self.api_client:
-            logger.debug("Using online API (Groq/OpenRouter) for generation")
-            result = self._generate_with_api(user_message, needs_steps=needs_steps)
-            # Cache successful results for instant future responses (iOS-quality)
-            if result and not result.get("error") and self.cache:
-                try:
-                    self.cache.set(cache_key, result)
-                except Exception as e:
-                    logger.debug(f"Cache set failed: {e}")
+            logger.info("🤖 Calling AI API...")
+            result = self._generate_with_api(user_message, needs_steps=needs_steps, screen_context=screen_context)
             return result
         else:
             # API client is required - this should never happen if initialized correctly
             logger.error("API client not available - cannot generate response")
-            # Use rule-based fallback as last resort
-            fallback_plan = self._generate_fallback_plan(user_message)
-            if fallback_plan and self.cache:
-                try:
-                    self.cache.set(cache_key, fallback_plan)
-                except Exception as e:
-                    logger.debug(f"Cache set failed: {e}")
-            return fallback_plan or {
+            return {
                 "description": "API client not available. Please check your .env file and API keys.",
                 "error": True
             }
     
-    def _generate_with_api(self, user_message: str, needs_steps: bool = False) -> Dict[str, Any]:
+    def _generate_with_api(self, user_message: str, needs_steps: bool = False, screen_context: str = None) -> Dict[str, Any]:
         """
         Generate response using online API (Groq/OpenRouter) with conversation context.
         
         Args:
             user_message: The user's message
             needs_steps: Whether the task needs step-by-step planning
+            screen_context: Description of screen content (from Vision)
         
         Returns:
             Dict with the command plan or description
@@ -234,34 +260,130 @@ Be instant. No explanations."""
             return self._generate_with_api_fallback(user_message, needs_steps=needs_steps)
         
         try:
+            # Augment user message with web search
+            # Dual detection: pattern-based (fast) + AI-based (smart)
+            augmented_message = user_message
+            try:
+                from core.ai_engine.web_search import get_web_search_helper, SEARCH_CONFIG
+                helper = get_web_search_helper()
+                
+                # Check if search is needed using dual detection
+                # Search ONLY for current/real-time information - not for general queries
+                # 1. Pattern-based detection (fast)
+                pattern_says_search = helper.needs_web_search(user_message)
+                
+                # 2. AI-based detection (smart, only if pattern didn't trigger)
+                ai_says_search = False
+                if not pattern_says_search:
+                    ai_says_search = self._ai_detects_search_needed(user_message)
+                
+                # Perform search ONLY if detection says it needs current information
+                # always_try_search means "always try when detection says yes", not "search everything"
+                should_search = pattern_says_search or ai_says_search
+                
+                search_results_text = None
+                if should_search:
+                    # Log which detection method triggered
+                    detection_method = []
+                    if pattern_says_search:
+                        detection_method.append("pattern")
+                    if ai_says_search:
+                        detection_method.append("AI")
+                    logger.info(f"🔍 Searching web (detected by: {', '.join(detection_method)})...")
+                    
+                    # Get raw search results for citation mapping
+                    try:
+                        from core.ai_engine.searxng_client import get_searxng_client
+                        searxng_client = get_searxng_client()
+                        if searxng_client.is_available():
+                            self._last_search_results = searxng_client.search(user_message, num_results=5)
+                    except:
+                        self._last_search_results = None
+                    
+                    # Add timeout to prevent slow loading (max 3 seconds - fast enough)
+                    search_results_text = helper.augment_query_with_search(user_message, timeout=3.0)
+                    if search_results_text:
+                        # Add web search results to the user message automatically
+                        # Make it very clear that search results contain the answer
+                        augmented_message = f"{user_message}\n\n=== CURRENT INFORMATION FROM WEB SEARCH (READ THIS CAREFULLY) ===\n{search_results_text}\n=== END OF SEARCH RESULTS ===\n\nIMPORTANT: The search results above contain the answer to the user's question. Read them carefully and provide a direct, concise answer with citations [1], [2], etc."
+                        logger.info(f"✓ Web search complete ({len(search_results_text)} chars)")
+                    elif should_search:
+                        # If search was attempted but failed, just use original message
+                        # Don't add a note - let AI answer from its knowledge naturally
+                        logger.debug("Web search attempted but no results, AI will use training knowledge")
+                        self._last_search_results = None
+                else:
+                    self._last_search_results = None
+                except Exception as e:
+                logger.debug(f"Web search augmentation failed: {e}")
+                # Continue without augmentation
+            
+            # Add screen context if available
+            if screen_context:
+                augmented_message += f"\n\n[Current Screen Content]:\n{screen_context}"
+            
+            # Detect query type and apply appropriate personality
+            query_type = self._detect_query_type(user_message)
+            is_factual = self._is_factual_query(user_message)
+            
             # Build the messages with conversation context
             if self.context:
                 # Get full conversation history
-                messages = self.context.get_context_for_request(user_message)
+                messages = self.context.get_context_for_request(augmented_message)
                 
-                # Enhance system prompt for step-by-step if needed
-                if needs_steps and messages and messages[0]["role"] == "system":
-                    messages[0]["content"] += "\n\nIMPORTANT: This is a COMPLEX task requiring multiple steps. Break it into detailed step-by-step actions."
+                # Check if this is a computer control request
+                is_control_request = self._is_control_request(user_message)
+                
+                # Apply expert personality for factual queries (override user personality)
+                if is_factual and messages and messages[0]["role"] == "system":
+                    # Add expert tone instruction for factual queries
+                    from core.ai_engine.conversation_context import ConversationContext
+                    expert_personality = ConversationContext.PERSONALITY_PROMPTS.get("expert", "")
+                    if expert_personality:
+                        # Append expert personality instructions for this factual query
+                        messages[0]["content"] += f"\n\n{expert_personality}\n\nIMPORTANT: For this factual query, use an expert, journalistic, unbiased tone. Provide detailed, well-sourced answers with proper citations."
+                
+                # Enhance system prompt for control requests
+                if messages and messages[0]["role"] == "system":
+                    if is_control_request:
+                        messages[0]["content"] += "\n\n⚠️ USER WANTS COMPUTER CONTROL - Generate G-code style commands (one per line). Example:\npointer 200 200\nclick 1 s\nwait 1.5\ntype \"text\"\nkey Return\n\nDO NOT use JSON format. Generate simple text commands only."
+                    if needs_steps:
+                        messages[0]["content"] += "\n\nIMPORTANT: This is a COMPLEX task requiring multiple steps. Break it into detailed step-by-step actions."
             else:
                 # No context, build simple messages
                 enhanced_prompt = self.system_prompt
+                
+                # Check if this is a computer control request
+                is_control_request = self._is_control_request(user_message)
+                if is_control_request:
+                    enhanced_prompt += "\n\n⚠️ USER WANTS COMPUTER CONTROL - Generate G-code style commands (one per line). Example:\npointer 200 200\nclick 1 s\nwait 1.5\ntype \"text\"\nkey Return\n\nDO NOT use JSON format. Generate simple text commands only."
+                
                 if needs_steps:
                     enhanced_prompt += "\n\nIMPORTANT: This is a COMPLEX task requiring multiple steps. Break it into detailed step-by-step actions."
                 
                 messages = [
                     {"role": "system", "content": enhanced_prompt},
-                    {"role": "user", "content": user_message}
+                    {"role": "user", "content": augmented_message}
                 ]
             
             logger.debug(f"Sending request to API with {len(messages)} messages")
             
+            # Determine provider preference: Use Google for search queries, Groq for general queries
+            # If web search was performed (search_results_text is not None), prefer Google
+            # Otherwise, use Groq directly (better rate limits for general knowledge)
+            prefer_google = (search_results_text is not None and len(search_results_text) > 0)
+            
+            if prefer_google:
+                logger.info("🔍 Web search detected - using Google Gemini (Groq fallback available)")
+            else:
+                logger.debug("💬 General query - using Groq (better rate limits)")
+            
             # Make the API request
-            response = self.api_client.chat(messages)
+            response = self.api_client.chat(messages, prefer_google=prefer_google)
             
             if "error" in response:
                 logger.error(f"API error: {response['error']}")
-                # Fall back to rule-based (no local models)
-                return self._generate_fallback_plan(user_message) or {
+                return {
                     "description": f"API error: {response['error']}. Please try again.",
                     "error": True
                 }
@@ -271,19 +393,56 @@ Be instant. No explanations."""
             provider = response.get("provider", "unknown")
             model = response.get("model", "unknown")
             
-            logger.debug(f"Got response from {provider}/{model}")
+            logger.info(f"✓ Response received from {provider}/{model} ({len(content)} chars)")
             
-            # Parse the JSON response
-            result = self._extract_json(content)
+            # Check if this is a computer control request
+            is_control_request = self._is_control_request(user_message)
+            
+            # Parse response based on request type
+            if is_control_request:
+                # Computer control: Parse G-code style commands
+                from core.automation.command_parser import CommandParser
+                parser = CommandParser()
+                try:
+                    commands = parser.parse(content)
+                    if commands:
+                        result = {
+                            "plan": commands,  # Store as "plan" for compatibility
+                            "gcode": content,  # Store original G-code text
+                            "description": f"Executing {len(commands)} commands",
+                            "estimated_time": len(commands) * 0.5  # Rough estimate
+                        }
+                    else:
+                        logger.warning("Control request but no valid commands found, treating as description")
+                        result = {"description": content, "fallback_mode": True}
+                except Exception as e:
+                    logger.error(f"Error parsing G-code commands: {e}")
+                    result = {"description": content, "fallback_mode": True, "error": str(e)}
+            else:
+                # Question/answer: Comet style - natural markdown response (not JSON)
+                # Check if response is JSON (old format) or natural (Comet style)
+                json_result = self._extract_json(content)
+                if json_result and "description" in json_result:
+                    # Old JSON format - extract description
+                    result = json_result
+                else:
+                    # Comet style - natural markdown response
+                    result = {"description": content, "comet_style": True}
+            
+            # Extract citations and map to sources if web search was used
+            if result and should_search and search_results_text:
+                result = self._extract_and_map_citations(result, content, search_results_text, self._last_search_results)
+                # Clear stored results after use
+                self._last_search_results = None
             
             # Add metadata about the provider
             if result:
                 result["_provider"] = provider
                 result["_model"] = model
             
-            # Update conversation context with the exchange
+            # Update conversation context with the exchange (use original message, not augmented)
             if self.context and result:
-                self.context.add_user_message(user_message)
+                self.context.add_user_message(user_message)  # Store original, not augmented
                 # Store the raw content for context, not the parsed JSON
                 self.context.add_assistant_message(content)
             
@@ -291,8 +450,7 @@ Be instant. No explanations."""
             
         except Exception as e:
             logger.error(f"Error generating with API: {e}", exc_info=True)
-            # Fall back to rule-based (no local models)
-            return self._generate_fallback_plan(user_message) or {
+            return {
                 "description": f"Error: {str(e)}. Please try again.",
                 "error": True
             }
@@ -310,7 +468,7 @@ Be instant. No explanations."""
         else:
             return str(result)
 
-    def _generate_with_api_fallback(self, user_message, needs_steps=False):
+    def _generate_with_api_fallback(self, user_message, needs_steps=False, screen_context=None):
         """Fallback when API is not available - returns error message."""
         logger.error("API client not available - cannot generate response")
         return {
@@ -320,86 +478,192 @@ Be instant. No explanations."""
             "error": True
         }
     
-    def _is_simple_query(self, user_message: str) -> bool:
-        """Check if query is simple and doesn't need GUI actions."""
+    def _is_control_request(self, user_message: str) -> bool:
+        """Check if user message is requesting computer control (needs a plan)."""
         message_lower = user_message.lower().strip()
         
-        # Simple greetings
-        if message_lower in ["hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening"]:
-            return True
-        
-        # Simple math expressions (e.g., "5*5", "10+20", "100/4")
-        # Must contain at least one operator and numbers
-        math_pattern = re.match(r'^\s*\d+\s*[\+\-\*/×÷]\s*\d+(\s*[\+\-\*/×÷]\s*\d+)*\s*$', user_message.strip())
-        if math_pattern:
-            return True
-        
-        # Simple questions that don't need actions
-        simple_patterns = [
-            "how are you", "what's up", "who are you", "what can you do",
-            "thanks", "thank you", "thx", "bye", "goodbye"
+        # Control action keywords
+        control_keywords = [
+            "open", "launch", "start", "run", "execute",
+            "click", "press", "type", "enter", "input",
+            "close", "quit", "exit", "kill",
+            "navigate", "go to", "visit", "browse",
+            "search for", "find", "look for",
+            "move", "drag", "scroll", "swipe",
+            "select", "choose", "pick",
+            "create", "make", "new", "add",
+            "delete", "remove", "clear",
+            "copy", "paste", "cut",
+            "save", "load", "open file",
+            "switch to", "change to", "go back", "go forward"
         ]
-        if any(pattern in message_lower for pattern in simple_patterns):
+        
+        # Check if message contains control keywords
+        for keyword in control_keywords:
+            if keyword in message_lower:
+            return True
+        
+        # Imperative sentences (commands) usually need control
+        # Check for imperative patterns
+        imperative_patterns = [
+            r'^(open|launch|start|run|click|press|type|enter|close|quit|exit|kill|navigate|go|visit|browse|search|find|move|drag|scroll|create|make|delete|remove|copy|paste|save|load|switch|change)',
+            r'^(let\'s|let me|can you|please|could you).*(open|launch|start|run|click|press|type|enter|close|quit|exit|navigate|go|visit|browse|search|find|move|drag|create|make|delete|remove|copy|paste|save|load|switch|change)',
+        ]
+        
+        for pattern in imperative_patterns:
+            if re.match(pattern, message_lower):
             return True
         
         return False
     
-    def _handle_simple_query(self, user_message: str) -> Dict[str, Any]:
-        """Handle simple queries that don't need GUI actions."""
-        message_lower = user_message.lower().strip()
+    def _detect_query_type(self, user_message: str) -> str:
+        """
+        Detect the type of query to apply appropriate formatting rules.
         
-        # Handle math expressions
-        math_pattern = re.match(r'^[\d+\-*/().\s]+$', user_message.strip())
-        if math_pattern:
-            try:
-                # Safe evaluation of math expression
-                result = eval(user_message.replace(" ", "").replace("×", "*").replace("÷", "/"))
-                return {
-                    "description": f"{user_message} = {result}",
-                    "system_query": True
-                }
-            except:
-                pass  # If eval fails, treat as regular query
-        
-        if message_lower in ["hi", "hello", "hey", "greetings"]:
-            return {
-                "description": "Hello! 👋 I'm Cosmic AI. How can I help you today?",
-                "system_query": True
-            }
-        
-        if message_lower in ["how are you", "what's up"]:
-            return {
-                "description": "I'm doing great! Ready to help you control your computer. What would you like to do?",
-                "system_query": True
-            }
-        
-        if message_lower in ["thanks", "thank you", "thx"]:
-            return {
-                "description": "You're welcome! 😊",
-                "system_query": True
-            }
-        
-        if message_lower in ["bye", "goodbye", "see you"]:
-            return {
-                "description": "Goodbye! 👋",
-                "system_query": True
-            }
-        
-        # Default simple response
-        return {
-            "description": "I'm here to help! What would you like me to do?",
-            "system_query": True
-        }
-    
-    def _needs_step_by_step(self, user_message: str) -> bool:
-        """Determine if a task needs step-by-step planning (complex multi-command operations).
-        Simple queries like math (5*5) should NOT trigger step-by-step.
+        Returns:
+            Query type: "news", "people", "coding", "math", "factual", "conversational", "control"
         """
         message_lower = user_message.lower().strip()
         
-        # First check if it's a simple query (math, greetings, etc.) - these don't need step-by-step
-        if self._is_simple_query(user_message):
+        # Check for computer control queries FIRST (but only if it's clearly a control request)
+        # Don't mistake "what is the latest news" as control
+        control_keywords = ["open", "launch", "start", "run", "click", "press", "type", "close", "navigate"]
+        if any(keyword in message_lower and (message_lower.startswith(keyword) or f" {keyword} " in message_lower) for keyword in control_keywords):
+            if self._is_control_request(user_message):
+                return "control"
+        
+        # News queries (check before control to avoid false positives)
+        if any(word in message_lower for word in ["news", "latest", "recent", "breaking", "current events", "today's news"]):
+            return "news"
+        
+        # People queries
+        if any(phrase in message_lower for phrase in ["who is", "who was", "tell me about", "biography of"]):
+            return "people"
+        
+        # Coding queries
+        if any(word in message_lower for word in ["code", "program", "function", "script", "algorithm", "python", "javascript", "how to code"]):
+            return "coding"
+        
+        # Math queries (check before factual to catch pure math)
+        if re.match(r'^[\d+\-*/().\s]+$', user_message.strip()):
+            return "math"
+        # Simple math questions like "what is 5 * 5"
+        if re.match(r'^what is\s+[\d+\-*/().\s]+$', message_lower):
+            if re.search(r'\d+\s*[\+\-\*/×÷]\s*\d+', user_message):
+                return "math"
+        if any(word in message_lower for word in ["calculate", "solve", "compute"]):
+            # Check if it's a math expression
+            if re.search(r'\d+\s*[\+\-\*/×÷]\s*\d+', user_message):
+                return "math"
+        
+        # Computer control queries (check again if not already identified)
+        if self._is_control_request(user_message):
+            return "control"
+        
+        # Factual queries (need expert tone)
+        if self._is_factual_query(user_message):
+            return "factual"
+        
+        # Conversational queries
+        return "conversational"
+    
+    def _ai_detects_search_needed(self, user_message: str) -> bool:
+        """
+        Use AI to intelligently detect if a query needs current/real-time information.
+        This is a lightweight check that complements pattern-based detection.
+        
+        Args:
+            user_message: The user's query
+            
+        Returns:
+            True if AI determines the query needs current information
+        """
+        # Check cache first
+        cache_key = user_message.lower().strip()
+        if cache_key in self._ai_search_cache:
+            return self._ai_search_cache[cache_key]
+        
+        # Only use AI detection if API client is available
+        if not self.api_client:
             return False
+        
+        try:
+            # Lightweight prompt for fast detection
+            detection_prompt = f"""Query: "{user_message}"
+
+Does this query require current, real-time, or post-training-cutoff information (after January 2025)?
+Examples that need current info: "who is the president", "latest news", "current weather", "what happened today"
+Examples that don't: "explain quantum physics", "how does photosynthesis work", "what is 2+2"
+
+Answer with ONLY: yes or no"""
+            
+            # Make a fast API call with minimal tokens
+            # Use Groq for this detection query (general knowledge, not search)
+            messages = [
+                {"role": "system", "content": "You are a query classifier. Answer only 'yes' or 'no'."},
+                {"role": "user", "content": detection_prompt}
+            ]
+            
+            response = self.api_client.chat(messages, prefer_google=False)
+            
+            if "error" in response:
+                logger.debug(f"AI search detection failed: {response.get('error')}")
+                return False
+            
+            content = response.get("content", "").strip().lower()
+            
+            # Parse yes/no answer
+            is_search_needed = "yes" in content and "no" not in content[:10]  # Check first 10 chars to avoid "no" in longer responses
+            
+            # Cache the result
+            self._ai_search_cache[cache_key] = is_search_needed
+            
+            # Limit cache size
+            if len(self._ai_search_cache) > 100:
+                # Remove oldest entries (simple FIFO)
+                oldest_key = next(iter(self._ai_search_cache))
+                del self._ai_search_cache[oldest_key]
+            
+            logger.debug(f"AI search detection: '{user_message[:50]}...' -> {is_search_needed}")
+            return is_search_needed
+            
+        except Exception as e:
+            logger.debug(f"AI search detection error: {e}")
+            return False
+    
+    def _is_factual_query(self, user_message: str) -> bool:
+        """
+        Determine if query is factual and needs expert/journalistic tone.
+        
+        Returns:
+            True if query is factual (news, research, current events, etc.)
+        """
+        message_lower = user_message.lower().strip()
+        
+        # Factual indicators
+        factual_keywords = [
+            "news", "current", "latest", "recent", "today", "now", "2024", "2025",
+            "who is", "what is", "when did", "where is", "how many", "how much",
+            "research", "study", "data", "statistics", "report", "according to",
+            "search", "find", "look up", "google"
+        ]
+        
+        if any(keyword in message_lower for keyword in factual_keywords):
+            return True
+        
+        # URL in query
+        if re.search(r'https?://', user_message):
+            return True
+        
+        # Explicit search request
+        if any(phrase in message_lower for phrase in ["search for", "look up", "find information about"]):
+            return True
+        
+            return False
+    
+    def _needs_step_by_step(self, user_message: str) -> bool:
+        """Determine if a task needs step-by-step planning (complex multi-command operations)."""
+        message_lower = user_message.lower().strip()
         
         # Complex operations that need multiple steps
         complex_keywords = [
@@ -414,8 +678,10 @@ Be instant. No explanations."""
         
         # Tasks that typically require multiple commands
         multi_step_patterns = [
-            "download.*program", "install.*software", "setup.*environment",
-            "create.*file.*and", "write.*script.*and", "build.*project"
+            r"download.*program", r"install.*software", r"setup.*environment",
+            r"create.*file.*and", r"write.*script.*and", r"build.*project",
+            r"install.*and", r"download.*and", r"create.*and",
+            r"first.*then", r"after.*that"
         ]
         
         for pattern in multi_step_patterns:
@@ -423,172 +689,6 @@ Be instant. No explanations."""
                 return True
         
         return False
-    
-    def _generate_fallback_plan(self, user_message):
-        """
-        Rule-based command plan generator for when AI models aren't available.
-        Handles common patterns like "open X", "search for Y", etc.
-        For conversational messages, returns text-only responses (no plan key).
-        """
-        message_lower = user_message.lower().strip()
-        plan = []
-        description = ""
-        
-        # Pattern: "open [application]"
-        if message_lower.startswith("open "):
-            app = user_message[5:].strip()
-            description = f"Opening {app}"
-            plan = [
-                {"action": "key", "key": "Super_L"},  # Open application launcher
-                {"action": "wait", "seconds": 0.5},
-                {"action": "type", "text": app},
-                {"action": "wait", "seconds": 0.5},
-                {"action": "key", "key": "Return"},
-                {"action": "wait", "seconds": 2}
-            ]
-        
-        # Pattern: "search for [query]" or "search [query]"
-        elif message_lower.startswith("search for ") or message_lower.startswith("search "):
-            query = user_message.split("search", 1)[1].replace("for", "").strip()
-            description = f"Searching for: {query}"
-            plan = [
-                {"action": "key", "key": "Super_L"},
-                {"action": "wait", "seconds": 0.5},
-                {"action": "type", "text": query},
-                {"action": "wait", "seconds": 0.5},
-                {"action": "key", "key": "Return"},
-                {"action": "wait", "seconds": 1}
-            ]
-        
-        # Pattern: "go to [url]" or "navigate to [url]"
-        elif "go to " in message_lower or "navigate to " in message_lower or "visit " in message_lower:
-            url = user_message
-            for prefix in ["go to ", "navigate to ", "visit "]:
-                if prefix in message_lower:
-                    url = user_message.split(prefix, 1)[1].strip()
-                    break
-            description = f"Navigating to {url}"
-            plan = [
-                {"action": "key", "key": "Super_L"},
-                {"action": "wait", "seconds": 0.5},
-                {"action": "type", "text": "firefox"},
-                {"action": "wait", "seconds": 0.5},
-                {"action": "key", "key": "Return"},
-                {"action": "wait", "seconds": 2},
-                {"action": "type", "text": url},
-                {"action": "key", "key": "Return"},
-                {"action": "wait", "seconds": 2}
-            ]
-        
-        # Pattern: "close [window]" or "close window"
-        elif message_lower.startswith("close"):
-            description = "Closing window"
-            plan = [
-                {"action": "key", "key": "Alt+F4"},
-                {"action": "wait", "seconds": 0.5}
-            ]
-        
-        # Pattern: "take screenshot" or "screenshot"
-        elif "screenshot" in message_lower:
-            description = "Taking screenshot"
-            plan = [
-                {"action": "key", "key": "Print"},
-                {"action": "wait", "seconds": 1}
-            ]
-        
-        # Pattern: "download and install [app]" or "download and run [app]"
-        elif "download and" in message_lower or "install and" in message_lower:
-            # Extract app name
-            app = user_message
-            for prefix in ["download and install", "download and run", "install and run"]:
-                if prefix in message_lower:
-                    app = user_message.split(prefix, 1)[1].strip()
-                    break
-            
-            description = f"Downloading and installing {app} (multi-step process)"
-            plan = [
-                {"action": "key", "key": "Super_L"},
-                {"action": "wait", "seconds": 0.5},
-                {"action": "type", "text": "terminal"},
-                {"action": "wait", "seconds": 0.5},
-                {"action": "key", "key": "Return"},
-                {"action": "wait", "seconds": 2},
-                {"action": "type", "text": f"# Download and install {app}"},
-                {"action": "key", "key": "Return"},
-                {"action": "wait", "seconds": 0.5},
-                {"action": "type", "text": f"# Step 1: Download {app}"},
-                {"action": "key", "key": "Return"},
-                {"action": "wait", "seconds": 0.5},
-                {"action": "type", "text": f"# Step 2: Install {app}"},
-                {"action": "key", "key": "Return"},
-                {"action": "wait", "seconds": 0.5},
-            ]
-        
-        # Pattern: "type [text]"
-        elif message_lower.startswith("type "):
-            text = user_message[5:].strip()
-            description = f"Typing: {text}"
-            plan = [
-                {"action": "type", "text": text},
-                {"action": "wait", "seconds": 0.5}
-            ]
-        
-        # Conversational messages - return text-only response (no plan key)
-        elif message_lower in ["hi", "hello", "hey", "greetings"]:
-            return {
-                "description": "Hello! 👋 I'm Cosmic AI. I can help you control your computer with natural language.\n\nTry commands like:\n• \"open firefox\"\n• \"search for cats\"\n• \"take screenshot\"\n\nNote: I'm currently using rule-based fallback mode. Install AI models for full capabilities: ./scripts/install-models.sh",
-                "fallback_mode": True
-            }
-        
-        elif message_lower in ["help", "what can you do", "what do you do"]:
-            return {
-                "description": "I can help you control your computer! Here are some things you can ask me:\n\n📱 **Applications:**\n• \"open firefox\" - Open an application\n• \"open calculator\" - Launch any app\n\n🔍 **Search:**\n• \"search for cats\" - Search your system\n\n🌐 **Web:**\n• \"go to github.com\" - Navigate to a website\n\n📸 **Actions:**\n• \"take screenshot\" - Capture your screen\n• \"close window\" - Close current window\n\n💡 **Tip:** Install AI models for more advanced capabilities: ./scripts/install-models.sh",
-                "fallback_mode": True
-            }
-        
-        elif message_lower in ["thanks", "thank you", "thx"]:
-            return {
-                "description": "You're welcome! 😊 Is there anything else I can help you with?",
-                "fallback_mode": True
-            }
-        
-        elif message_lower in ["bye", "goodbye", "see you"]:
-            return {
-                "description": "Goodbye! 👋 Feel free to come back anytime.",
-                "fallback_mode": True
-            }
-        
-        # Questions about capabilities
-        elif any(word in message_lower for word in ["what", "how", "can you", "do you", "?"]):
-            return {
-                "description": "I can help you control your computer through natural language commands. Try asking me to:\n• Open applications\n• Search for files or content\n• Navigate to websites\n• Take screenshots\n• And more!\n\nFor complex requests, install AI models: ./scripts/install-models.sh",
-                "fallback_mode": True
-            }
-        
-        # Default: Show message that AI model is needed (but don't return empty plan)
-        else:
-            # For unrecognized messages, return a helpful text response instead of empty plan
-            return {
-                "description": f"I'm not sure how to handle '{user_message}' in fallback mode.\n\nI can help with commands like:\n• \"open [app]\" - Open an application\n• \"search for [query]\" - Search your system\n• \"go to [url]\" - Navigate to a website\n• \"take screenshot\" - Capture screen\n\nFor more advanced capabilities, install AI models:\n./scripts/install-models.sh",
-                "fallback_mode": True
-            }
-        
-        # Only return command plan if we have actual actions
-        if plan:
-            estimated_time = sum(step.get("seconds", 0.1) for step in plan if step.get("action") == "wait") + len(plan) * 0.1
-            
-            return {
-                "plan": plan,
-                "description": description,
-                "estimated_time": round(estimated_time, 1),
-                "fallback_mode": True
-            }
-        else:
-            # No plan generated, return text-only response
-            return {
-                "description": description,
-                "fallback_mode": True
-            }
     
     def clear_context(self):
         """Clear the conversation context."""
