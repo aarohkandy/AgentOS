@@ -49,7 +49,7 @@ class SystemAccess:
                 "cpu_count": psutil.cpu_count(),
                 "ram_total_gb": round(psutil.virtual_memory().total / (1024**3), 2),
                 "ram_available_gb": round(psutil.virtual_memory().available / (1024**3), 2),
-                "cpu_percent": psutil.cpu_percent(interval=1),
+                "cpu_percent": psutil.cpu_percent(interval=0.1),  # Faster - 0.1s instead of 1s
             }
         except Exception as e:
             logger.error(f"Error getting system info: {e}")
@@ -70,67 +70,27 @@ class SystemAccess:
             
             logger.debug(f"Searching for news with query: {search_query}")
             
-            # Try instant answer first
-            instant = helper.search_instant_answer(search_query)
-            if instant:
-                answer = instant.get("answer", "")
-                source = instant.get("source", "")
-                url = instant.get("url", "")
-                
-                result_text = answer
-                if source:
-                    result_text += f" (Source: {source})"
-                if url:
-                    result_text += f"\nMore info: {url}"
-                
+            # Use fast augment_query_with_search with short timeout (don't block for long)
+            search_results = helper.augment_query_with_search(search_query, timeout=2.0)  # Fast - 2 seconds max
+            if search_results:
                 return {
                     "success": True,
-                    "message": f"**Recent News{' - ' + query if query else ''}:**\n\n{result_text}",
+                    "message": f"**Recent News{' - ' + query if query else ''}:**\n\n{search_results}",
                     "query": query or "general",
-                    "results": result_text
+                    "results": search_results
                 }
             
-            # Try HTML search for more results
-            logger.debug("Instant answer not available, trying HTML search...")
-            html_results = helper.search_html(search_query, num_results=limit)
-            if html_results and len(html_results) > 0:
-                formatted = helper.format_search_results(html_results)
-                return {
-                    "success": True,
-                    "message": f"**Recent News{' - ' + query if query else ''}:**\n\n{formatted}",
-                    "query": query or "general",
-                    "results": formatted
-                }
-            
-            # Last resort: try a simpler search
-            logger.debug("HTML search returned no results, trying simpler query...")
-            simple_query = "news" if not query else f"news {query}"
-            simple_results = helper.search_html(simple_query, num_results=3)
-            if simple_results and len(simple_results) > 0:
-                formatted = helper.format_search_results(simple_results)
-                return {
-                    "success": True,
-                    "message": f"**Recent News{' - ' + query if query else ''}:**\n\n{formatted}",
-                    "query": query or "general",
-                    "results": formatted
-                }
-            
-            # No results found - return helpful message
-            logger.warning(f"No news results found for query: {search_query}")
-            return {
-                "success": False,
-                "error": "No news results found",
-                "message": "I couldn't retrieve news at this time. This might be due to network issues or DuckDuckGo being temporarily unavailable. Please try again in a moment, or try asking for specific news topics like 'technology news' or 'sports news'."
-            }
+            # No results found - let the AI handle it with context instead (don't block)
+            return None
             
         except ImportError:
             # Fallback if WebSearchHelper not available
             logger.warning("WebSearchHelper not available for news")
-            return {
-                "success": True,
-                "message": "General news - use web search for current news",
-                "suggestion": "Try: 'search for latest technology news'"
-            }
+                return {
+                    "success": True,
+                    "message": "General news - use web search for current news",
+                    "suggestion": "Try: 'search for latest technology news'"
+                }
         except Exception as e:
             logger.error(f"Error getting news: {e}")
             return {"success": False, "error": str(e)}
@@ -143,34 +103,13 @@ class SystemAccess:
             
             helper = get_web_search_helper()
             
-            # Try instant answer first (fastest, most accurate)
-            instant = helper.search_instant_answer(query)
-            if instant:
-                answer = instant.get("answer", "")
-                source = instant.get("source", "")
-                url = instant.get("url", "")
-                
-                result_text = answer
-                if source:
-                    result_text += f" (Source: {source})"
-                if url:
-                    result_text += f"\nMore info: {url}"
-                
+            # Use fast augment_query_with_search with short timeout
+            search_results = helper.augment_query_with_search(query, timeout=2.0)  # Fast - 2 seconds max
+            if search_results:
                 return {
                     "success": True,
                     "query": query,
-                    "results": result_text,
-                    "url": url
-                }
-            
-            # Fall back to HTML search for more results
-            html_results = helper.search_html(query, num_results=3)
-            if html_results:
-                formatted = helper.format_search_results(html_results)
-                return {
-                    "success": True,
-                    "query": query,
-                    "results": formatted,
+                    "results": search_results,
                     "url": f"https://html.duckduckgo.com/html/?q={query}"
                 }
             
@@ -185,12 +124,12 @@ class SystemAccess:
             # Fallback if WebSearchHelper not available
             logger.warning("WebSearchHelper not available, using fallback")
             search_url = f"https://html.duckduckgo.com/html/?q={query}"
-            return {
-                "success": True,
-                "query": query,
-                "results": f"Search completed for: {query}. Use browser for detailed results.",
-                "url": search_url
-            }
+                return {
+                    "success": True,
+                    "query": query,
+                    "results": f"Search completed for: {query}. Use browser for detailed results.",
+                    "url": search_url
+                }
         except Exception as e:
             logger.error(f"Error in web search: {e}")
             return {"success": False, "error": str(e)}
@@ -309,48 +248,13 @@ class SystemAccess:
         return None
     
     def handle_query(self, query: str) -> Optional[Dict[str, Any]]:
-        """Handle a query and return response if it's a system/internet query, None otherwise."""
-        query_lower = query.lower().strip()
-        
-        # Math queries (simple calculations)
-        if re.match(r'^[\d+\-*/().\s]+$', query.strip()):
-            try:
-                # Safe eval for math expressions only
-                result = eval(query.strip(), {"__builtins__": {}}, {})
-                return {
-                    "description": f"{query.strip()} = {result}",
-                    "system_query": True
-                }
-            except:
-                pass  # Not a valid math expression, continue
-        
-        # Time queries
-        if any(phrase in query_lower for phrase in ["what time", "current time", "time is it", "what's the time"]):
-            time_info = self.get_time()
-            if time_info.get("success"):
-                return {
-                    "description": f"Current time: {time_info.get('datetime')}",
-                    "system_query": True
-                }
-        
-        # System info queries
-        if any(phrase in query_lower for phrase in ["system info", "system information", "computer info", "hardware info"]):
-            sys_info = self.get_system_info()
-            if sys_info.get("success"):
-                info_str = f"**System Information:**\n"
-                info_str += f"• OS: {sys_info.get('os')} {sys_info.get('os_version', '')}\n"
-                info_str += f"• Hostname: {sys_info.get('hostname')}\n"
-                info_str += f"• CPU Cores: {sys_info.get('cpu_count')}\n"
-                info_str += f"• RAM: {sys_info.get('ram_available_gb')}GB available / {sys_info.get('ram_total_gb')}GB total\n"
-                info_str += f"• CPU Usage: {sys_info.get('cpu_percent')}%"
-                return {
-                    "description": info_str,
-                    "system_query": True
-                }
-        
-        # News queries
+        """Handle a query and return response if it's a system/internet query, None otherwise.
+        All queries now go through AI - no pre-coded responses."""
+        # All queries go through AI - return None to let AI handle everything
+        # This allows the AI to use conversation context and web search augmentation
+        # The AI will be able to search and provide news in a more natural way
         if any(phrase in query_lower for phrase in ["news", "recent news", "latest news", "what's happening", "current events"]):
-            # Extract news topic if specified
+            # Try to get news, but if it fails, let AI handle it
             news_query = None
             for phrase in ["about", "on", "for"]:
                 if phrase in query_lower:
@@ -360,7 +264,7 @@ class SystemAccess:
                         break
             
             news_result = self.get_news(news_query)
-            if news_result.get("success"):
+            if news_result and news_result.get("success"):
                 # Return the actual news results
                 description = news_result.get("message") or news_result.get("results", "News information retrieved")
                 return {
@@ -368,11 +272,9 @@ class SystemAccess:
                     "system_query": True,
                     "internet_access": True
                 }
-            else:
-                return {
-                    "description": news_result.get("message", "No internet connection available for news."),
-                    "system_query": True
-                }
+            # If get_news returns None or fails, let the AI handle it (return None)
+            # The AI will use web search augmentation through conversation context
+            return None
         
         # Web search queries
         search_prefixes = ["search for", "look up", "find information about", "what is", "who is", "tell me about"]
@@ -392,10 +294,9 @@ class SystemAccess:
                         "internet_access": True
                     }
                 else:
-                    return {
-                        "description": "No internet connection available for web search.",
-                        "system_query": True
-                    }
+                    # Don't return error - let it fall through to AI which can handle it better
+                    # or use conversation context
+                    return None
         
         # Fall back to process_query for other cases
         result = self.process_query(query)
