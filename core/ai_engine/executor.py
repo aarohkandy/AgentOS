@@ -275,7 +275,7 @@ class Executor:
                     self.screen_ctrl.click(x, y, button=0)  # Move mouse
                     # Use xdotool to scroll
                     import subprocess
-                    subprocess.run(["xdotool", "click", "--repeat", abs(amount), "4" if amount > 0 else "5"], check=False)
+                    subprocess.run(["xdotool", "click", "--repeat", str(abs(amount)), "4" if amount > 0 else "5"], check=False)
             
             elif action == "screenshot":
                 filename = step.get("filename", f"screenshot_{int(time.time())}.png")

@@ -86,11 +86,11 @@ class SystemAccess:
         except ImportError:
             # Fallback if WebSearchHelper not available
             logger.warning("WebSearchHelper not available for news")
-                return {
-                    "success": True,
-                    "message": "General news - use web search for current news",
-                    "suggestion": "Try: 'search for latest technology news'"
-                }
+            return {
+                "success": True,
+                "message": "General news - use web search for current news",
+                "suggestion": "Try: 'search for latest technology news'"
+            }
         except Exception as e:
             logger.error(f"Error getting news: {e}")
             return {"success": False, "error": str(e)}
@@ -124,12 +124,12 @@ class SystemAccess:
             # Fallback if WebSearchHelper not available
             logger.warning("WebSearchHelper not available, using fallback")
             search_url = f"https://html.duckduckgo.com/html/?q={query}"
-                return {
-                    "success": True,
-                    "query": query,
-                    "results": f"Search completed for: {query}. Use browser for detailed results.",
-                    "url": search_url
-                }
+            return {
+                "success": True,
+                "query": query,
+                "results": f"Search completed for: {query}. Use browser for detailed results.",
+                "url": search_url
+            }
         except Exception as e:
             logger.error(f"Error in web search: {e}")
             return {"success": False, "error": str(e)}

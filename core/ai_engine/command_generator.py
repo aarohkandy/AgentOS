@@ -314,7 +314,7 @@ Be instant. No explanations."""
                         self._last_search_results = None
                 else:
                     self._last_search_results = None
-                except Exception as e:
+            except Exception as e:
                 logger.debug(f"Web search augmentation failed: {e}")
                 # Continue without augmentation
             
@@ -501,7 +501,7 @@ Be instant. No explanations."""
         # Check if message contains control keywords
         for keyword in control_keywords:
             if keyword in message_lower:
-            return True
+                return True
         
         # Imperative sentences (commands) usually need control
         # Check for imperative patterns
@@ -512,7 +512,7 @@ Be instant. No explanations."""
         
         for pattern in imperative_patterns:
             if re.match(pattern, message_lower):
-            return True
+                return True
         
         return False
     

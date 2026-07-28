@@ -150,7 +150,7 @@ class CosmicAI:
                 
                 # Initialize API client
                 if get_api_client:
-            try:
+                    try:
                         self.api_client = get_api_client(
                             google_model=google_model,
                             google_fallback_model=google_fallback,
@@ -178,7 +178,7 @@ class CosmicAI:
                             enable_web_search=enable_web_search
                         )
                         logger.debug("Conversation context initialized")
-            except Exception as e:
+                    except Exception as e:
                         logger.warning(f"Failed to initialize conversation context: {e}")
                         self.conversation_context = None
             
